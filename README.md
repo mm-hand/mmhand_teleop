@@ -73,7 +73,7 @@ RETARGET_THUMB_PROXIMAL_BEND_WEIGHT = 1.0
 RETARGET_THUMB_DISTAL_BEND_WEIGHT = 1.0
 RETARGET_FINGER_ANGLE_WEIGHT = 1.0
 RETARGET_FINGERTIP_VECTOR_WEIGHT = 1.0
-RETARGET_ANGLE_FILTER = (1.0, 0.02, 1.0)
+RETARGET_POSITION_NORMALIZER_M = 0.086
 RETARGET_MAX_EVALUATIONS = 15
 RETARGET_FTOL = 3e-5
 ```
@@ -87,7 +87,7 @@ For MANUS, place/build the bundled Core SDK bridge as described in
 `input/manus/assets/README.md`, then set `INPUT_SOURCE = "manus"`.
 `MANUS_PAD_LOCAL_AXIS` selects the outward pad axis in every Tip node's local
 frame and defaults to `(0, 0, -1)`. `MANUS_THUMB_PAD_ROTATION_DEG = 30.0`
-aligns the resulting thumb direction around the palm-local IP-to-TIP axis:
+aligns the resulting thumb direction around the source-frame IP-to-TIP axis:
 positive for Left and negative for Right. This correction is completed before
 constructing `InputFrame`; retargeting receives the corrected direction without
 any MANUS-specific branch. Handedness comes directly from the SDK frame or its
@@ -141,18 +141,19 @@ connection exclusively. Enter `q` at any calibration prompt to cancel safely.
 `--ros` and `--sim` are mutually exclusive. Every other option belongs in
 `config.py`.
 
-`NORMALIZE_INPUT_HAND = False` is the current diagnostic mode. It bypasses
-`relative_hand()` wrist centering, palm-frame rotation, and palm-size scaling,
-so source Standard21 points and pad directions enter Viewer and retargeting in
-their original source frame. Set it back to `True` to restore the normalized
-`0.086 m` common input geometry.
+Input Standard21 points always retain source coordinates and physical size in
+metres: MANUS uses WORLD/GLOBAL coordinates, while WiLoR retains its reconstructed
+geometry after handedness handling. There is no wrist-centering, palm-frame
+rotation, or hand-size scaling stage in the input pipeline. The retargeter still
+builds a CMC-local frame for comparing features; this translates and rotates
+geometry without scaling it. Finger-pad directions remain unit vectors.
 
 Open <http://localhost:8080>. The dashboard contains the input preview, the
 input hand, and the retargeted MMHand. WiLoR overlays the detected box and
 yellow MANO mesh on the camera image. Its status shows confidence followed by
 smoothed tracking FPS. Both hand views show finger-pad directions, thumb angle
 arcs, live angle values in degrees, and palm width in millimetres. Input palm
-width is the normalized Index-MCP-to-Little-MCP distance (`P5` to `P17`);
+width is the source Index-MCP-to-Little-MCP distance (`P5` to `P17`);
 MMHand palm width is the FK distance between the corresponding MCP A-A joint
 origins. Both panels also report a direct Hand0-to-Middle-tip distance. Input
 Hand0 is Standard21 `P0`, so its value is simply `|P12-P0|` and decreases when
@@ -165,13 +166,13 @@ The robot panel labels these physical URDF measurements as
 `MMHand palm width` and `MMHand URDF palm length`; MMHand has no palm-size
 normalization stage. The input panel
 additionally reports `raw_palm_length`: the same direct Hand0-to-tip distance
-computed from source points before `relative_hand()`
-palm-size normalization. This is the displayed raw palm length, not a
+computed from source points before input filtering. This is the displayed raw
+palm length, not a
 `P0`-to-`P9` Euclidean distance. It also reports
 `raw_palm_width`, the P5-to-P17 Euclidean distance from those same source
 points. All displayed distances use millimetres. The input thumb text comes from
 `initial_joint_angles`; its arcs visualize the bends present in the 21-point
-geometry. The robot text displays the filtered J18/J19 values. The loss panel
+geometry. The robot text displays the output J18/J19 values. The loss panel
 reports the seven weighted objective terms and their total.
 
 The `Residual vectors` selector controls paired diagnostics in both 3D panels.
@@ -182,17 +183,18 @@ four robot virtual-tip vectors and is selected by default. `Thumb pad` and
 Position labels contain CMC-local XYZ components and magnitudes in millimetres;
 direction labels contain local XYZ, unit norm, and angle error. The selector
 also reports the configured group weights, each pad's effective `/3` weight,
-and the `STANDARD_PALM_SIZE` normalizer for position terms. A zero weight is
+and the `RETARGET_POSITION_NORMALIZER_M` normalizer for position terms. A zero
+weight is
 marked disabled even though its diagnostic remains selectable.
 
 These diagnostics deliberately use the virtual `tip_Link` origins consumed by
 the loss. They do not use the Middle fingertip mesh vertex reserved for the
 fixed URDF palm-length display. Human values are the unweighted targets built
 from the current `InputFrame`; robot values come from `RobotModel.features()`
-at the filtered joint vector currently displayed by Viser.
+at the output joint vector currently displayed by Viser.
 
 The `Input hand` title reports the latency from entering `source.read()`
-until that request returns normalized common-frame data. The `Retargeted
+until that request returns common input data. The `Retargeted
 MMHand` title starts when that completed frame is submitted to the background
 retarget worker and ends when its solve completes. These are non-overlapping
 pipeline measurements rather than two end-to-end intervals; optional ROS
@@ -207,9 +209,8 @@ scene-update submission and does not claim to measure completion of GPU drawing
 inside the browser iframe.
 
 The retargeted panel also decomposes this post-InputFrame latency. `worker
-queue` is time waiting for the background solver. `targets`, `SLSQP`, `output
-filter`, and `final loss` are measured inside `Retargeter.solve()`. `solve
-total` covers the complete solve; `solver overhead` is its small unclassified
+queue` is time waiting for the background solver. `targets`, `SLSQP`, and
+`final loss` are measured inside `Retargeter.solve()`. `solve total` covers the complete solve; `solver overhead` is its small unclassified
 remainder. Therefore `worker queue + solve total` approximately equals the
 right-side latency. Browser refresh and GPU drawing remain outside these
 measurements.
@@ -241,21 +242,20 @@ class InputFrame:
     initial_joint_angles: InitialJointAngles | None = None
     raw_palm_length: float | None = None
     raw_palm_width: float | None = None
-    points_normalized: bool = True
 ```
 
 `points` is a finite `21 x 3` array in metres. Its order is wrist followed by
 Thumb, Index, Middle, Ring, and Little, with four joints from palm to tip per
-finger. With `NORMALIZE_INPUT_HAND=False`, these are the source Standard21
-coordinates without centering, rotation, or scale normalization. When the
-switch is `True`, the wrist is the origin, axes are palm-local, and the mean
-distance from wrist to the four MCP joints is normalized to `0.086 m`.
+finger. Points retain the source Standard21 coordinates and physical size in
+metres. MANUS uses WORLD/GLOBAL coordinates; WiLoR uses its reconstructed source
+geometry after handedness handling. No input centering, rotation, or size scaling
+is applied.
 
 `finger_pad_directions` is a finite `5 x 3` array in Thumb-to-Little order. Each
-row is an outward unit vector in the same palm-local frame. WiLoR produces this
+row is an outward unit vector in the same source frame as points. WiLoR produces
+this
 field from selected MANO pad faces. MANUS rotates `MANUS_PAD_LOCAL_AXIS` by the
-five Tip-node WORLD quaternions, transforms the results into the palm frame,
-then applies its handed thumb-pad alignment before constructing `InputFrame`.
+five Tip-node WORLD quaternions, then applies its handed thumb-pad alignment before constructing `InputFrame`.
 Retargeting compares the thumb row under `RETARGET_THUMB_PAD_WEIGHT`. Index,
 Middle, Ring, and Little use their corresponding independent `*_PAD_WEIGHT`.
 
@@ -301,26 +301,27 @@ the same frame.
 ```text
 OpenCV frame -> detector/cached crop -> WiLoR MANO mesh
              -> Standard21 points + pad-face normals
-             -> palm-local normalization -> point/direction filters
+             -> source geometry -> point/direction filters
              -> angles solved from filtered points -> InputFrame
 
 MANUS Core Integrated -> per-glove calibration load/wizard
                       -> Raw25 WORLD positions + Tip WORLD rotations
                       -> semantic mapping, or fixed fallback when NodeInfo is absent
-                      -> palm-local points + 5 pad directions
+                      -> source points + 5 pad directions
                       -> handed thumb-pad alignment (+30° Left / -30° Right)
                       + ergonomics degrees -> radians
                         + configured thumb PIP/DIP mapping -> InputFrame
 
 InputFrame -> human CMC target frame + angle-to-URDF target mapping
            -> full J00-J20 bounded SLSQP with analytic Jacobians
-           -> 21-channel output filter -> dashboard / ROS 2 / SAPIEN
+           -> URDF limit clipping -> dashboard / ROS 2 / SAPIEN
 ```
 
 WiLoR runs its detector and reconstruction models in FP16, then performs box
 and NMS arithmetic in FP32. The MANO mesh is regressed to standard landmarks.
-Pad-face normals are averaged, mirrored for handedness, transformed into the
-palm frame, and normalized. The thumb normal is rotated by the configured fixed
+Pad-face normals are averaged, mirrored for handedness, kept in source
+coordinates, and normalized to unit length. The thumb normal is rotated by the
+configured fixed
 angle around its IP-to-TIP axis: positive for Left and negative for Right.
 
 ### Retarget target construction
@@ -364,8 +365,10 @@ Jacobians for all 21 joints:
 | `thumb_pad` | Robot thumb pad normal versus the input thumb pad direction |
 | `finger_pads` | Four robot finger pad normals versus the corresponding input directions |
 
-Position and relative-vector errors are normalized by `STANDARD_PALM_SIZE`;
-angle errors are in radians and direction errors are dimensionless. Index,
+Position and relative-vector errors are normalized by `RETARGET_POSITION_NORMALIZER_M`;
+this fixed residual scale does not resize the hand. Both `thumb_tip` and
+`fingertip_vectors` retain dependence on input hand size. Angle errors are in
+radians and direction errors are dimensionless. Index,
 Middle, Ring, and Little pad rows have independent configured weights. Each
 finger contributes directly without averaging across the four fingers; its
 effective solver multiplier is `weight / 3`, where `/3` averages the XYZ
@@ -383,16 +386,15 @@ P0-to-P9 as X, the P5-to-P17 side vector projected orthogonal to X as Y, and
 where `R_h` has those axes as columns. For MMHand, the local origin is the
 projection of the Thumb MCP A-A origin onto the Thumb CMC joint-axis line and
 the axes are the URDF `base_link` rotation. Robot points and directions use the
-same row-vector formulas with that origin and rotation. With
-`NORMALIZE_INPUT_HAND=False`, this frame conversion translates and rotates but
+same row-vector formulas with that origin and rotation. This frame conversion
+translates and rotates but
 does not scale input lengths. Only Left-hand frames currently enter the solver.
 
 All J00-J20 variables are optimized together with bounded SLSQP. The URDF
 supplies every lower/upper bound, and the best finite state encountered within
 `RETARGET_MAX_EVALUATIONS` is retained even if the evaluation cap stops SLSQP.
-The previous unfiltered solution becomes the next warm start. Finally, a
-21-channel One Euro filter runs in degrees, the result is converted back to
-radians, and every output is clipped to its URDF limits.
+The previous solution becomes the next warm start. Every output is clipped to
+its URDF limits and returned directly in radians, without output filtering.
 
 The tracking loop and Viewer-process proxy retain the latest completed robot
 result. The proxy repeats that result in subsequent snapshots, so replacing a
@@ -415,24 +417,30 @@ with Git LFS, so `git lfs pull` is required after cloning.
 
 | Topic | Shape | Meaning |
 |---|---:|---|
-| `/hand/keypoints` | `21 x 3` | palm-local normalized points in metres |
-| `/hand/finger_pad_directions` | `5 x 3` | palm-local outward unit vectors |
-| `/raw_ik_target` | `21` | MMHand J00-J20 in degrees |
+| `/mmhand/keypoints` | `21 x 3` | source-frame points in metres |
+| `/mmhand/finger_pad_directions` | `5 x 3` | source-frame outward unit vectors |
+| `/mmhand/joint_angle_deg` | `21` | MMHand J00-J20 in degrees |
 
 Every frame published on the keypoint topic has a matching direction message.
-Keypoint and direction layouts include handedness. The layouts are:
+Keypoint and direction layouts append `:hand=Left` or `:hand=Right`. The layouts are:
 
 ```text
-mmhand_teleop:keypoints:v1:palm_local_m:size=0.086
-mmhand_teleop:finger_pad_directions:v1:palm_local_unit
+mmhand_teleop:keypoints:v2:source_m
+mmhand_teleop:finger_pad_directions:v2:source_unit
 mmhand:J00-J20:urdf_deg
 ```
+
+The messages have no Header, timestamp, or frame sequence. Input topics are
+published whenever points are present, even if the frame is not ready for
+retargeting. Joint angles are published only for completed ready-left-hand
+solves. The asynchronous solver means input and robot messages are not strictly
+synchronized. Missing input does not publish a stop or zero-angle message.
 
 ## Repository structure
 
 ```text
 input/
-  frame.py              common frame, topology, and palm normalization
+  frame.py              common frame, topology, and CMC geometry
   wilor/
     camera.py           latest-frame OpenCV capture
     source.py           ONNX inference, mesh geometry, box caching, filtering

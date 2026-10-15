@@ -34,7 +34,7 @@ def main():
         while True:
             request_started = time.monotonic()
             frame = source.read()
-            normalization_latency_ms = (
+            input_latency_ms = (
                 time.monotonic() - request_started
             ) * 1000.0
             if frame is None:
@@ -64,7 +64,7 @@ def main():
             )
             displayed = viewer.update(
                 frame, view_robot, view_losses,
-                normalization_latency_ms=normalization_latency_ms,
+                input_latency_ms=input_latency_ms,
                 retarget_latency_ms=view_latency,
                 retarget_timings_ms=view_timings,
             )

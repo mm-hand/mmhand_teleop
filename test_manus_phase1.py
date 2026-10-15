@@ -8,7 +8,7 @@ import track
 
 from input import create_source
 from input.frame import (
-    InitialJointAngles, compute_cmc_frame, relative_hand,
+    InitialJointAngles, compute_cmc_frame,
     hand0_middle_tip_distance,
 )
 from input.manus.adapter import (
@@ -165,7 +165,6 @@ class ManusPhase1Tests(unittest.TestCase):
         self.assertTrue(frame.ready)
         self.assertEqual(frame.handedness, "Left")
         self.assertEqual(frame.points.shape, (21, 3))
-        self.assertFalse(frame.points_normalized)
         np.testing.assert_allclose(frame.points, standard_hand_world())
         self.assertEqual(frame.finger_pad_directions.shape, (5, 3))
         self.assertIsInstance(frame.initial_joint_angles, InitialJointAngles)
@@ -220,11 +219,24 @@ class ManusPhase1Tests(unittest.TestCase):
         adapted = adapt_raw_skeleton(
             packet.positions, rotations_wxyz=packet.rotations_wxyz
         )
-        standard = convert_manus25_to_standard21(packet.positions)
-        expected = relative_hand(
-            standard, np.tile((0, 1., 0), (5, 1)), normalize=False
-        )[1]
+        expected = np.tile((0, 1., 0), (5, 1))
         np.testing.assert_allclose(adapted.directions, expected, atol=1e-7)
+
+    def test_adapter_preserves_source_translation_and_scale(self):
+        packet = raw_packet()
+        original = adapt_raw_skeleton(
+            packet.positions, rotations_wxyz=packet.rotations_wxyz,
+            handedness="Left",
+        )
+        offset = np.array((0.7, -0.4, 1.2))
+        transformed = adapt_raw_skeleton(
+            packet.positions * 2 + offset,
+            rotations_wxyz=packet.rotations_wxyz, handedness="Left",
+        )
+        np.testing.assert_allclose(transformed.points, original.points * 2 + offset)
+        np.testing.assert_allclose(transformed.directions, original.directions)
+        self.assertAlmostEqual(transformed.raw_palm_length, original.raw_palm_length * 2)
+        self.assertAlmostEqual(transformed.raw_palm_width, original.raw_palm_width * 2)
 
     def test_thumb_pad_alignment_uses_handed_ip_to_tip_rotation(self):
         packet = raw_packet()

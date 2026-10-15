@@ -5,7 +5,8 @@ from unittest.mock import patch
 import numpy as np
 
 from input import create_source
-from input.frame import initial_joint_angles_from_points, relative_hand
+from input.frame import initial_joint_angles_from_points
+from retarget import human_vector_features
 from one_euro import OneEuro
 from track import _parse_args
 from input.wilor.source import (
@@ -91,19 +92,23 @@ class WilorTests(unittest.TestCase):
         ):
             self.assertIs(create_source(), selected)
 
-    def test_tracking_frame_is_rigid_transform_invariant(self):
+    def test_cmc_features_are_rigid_transform_invariant_but_preserve_scale(self):
         points = standard_hand()
         directions = np.tile((0.0, 0.0, -1.0), (5, 1))
         angle = 0.7
         rotation = np.array(((np.cos(angle), -np.sin(angle), 0),
                              (np.sin(angle), np.cos(angle), 0),
                              (0, 0, 1)))
-        expected_points, expected_directions = relative_hand(points, directions)
-        actual_points, actual_directions = relative_hand(
+        expected = human_vector_features(points, directions)
+        actual = human_vector_features(
             points @ rotation.T + (2, 3, 4), directions @ rotation.T
         )
-        np.testing.assert_allclose(actual_points, expected_points, atol=1e-7)
-        np.testing.assert_allclose(actual_directions, expected_directions, atol=1e-7)
+        for transformed, original in zip(actual[2:], expected[2:]):
+            np.testing.assert_allclose(transformed, original, atol=1e-7)
+        scaled = human_vector_features(points * 2, directions)
+        np.testing.assert_allclose(scaled[2], expected[2] * 2)
+        np.testing.assert_allclose(scaled[3], expected[3] * 2)
+        np.testing.assert_allclose(scaled[4], expected[4])
 
     def test_mesh_to_standard21_and_pad_directions(self):
         vertices, regressor, faces = synthetic_mesh()
@@ -122,6 +127,12 @@ class WilorTests(unittest.TestCase):
         self.assertGreater(raw_width, 0.0)
         self.assertAlmostEqual(right_raw_x, left_raw_x)
         self.assertAlmostEqual(right_raw_width, left_raw_width)
+        np.testing.assert_allclose(right_points, standard_hand(), atol=1e-8)
+        np.testing.assert_allclose(
+            left_points, standard_hand() * (-1, 1, 1), atol=1e-8
+        )
+        scaled_points = mesh_hand(vertices * 2, 1, regressor, faces)[0]
+        np.testing.assert_allclose(scaled_points, right_points * 2, atol=1e-8)
         self.assertEqual(points.shape, (21, 3))
         self.assertEqual(directions.shape, (5, 3))
         self.assertTrue(np.isfinite(points).all())

@@ -8,10 +8,6 @@ WILOR_ASSET_DIR = _ROOT / "input/wilor/assets"
 # Input -----------------------------------------------------------------------
 
 INPUT_SOURCE = "manus"  # "wilor" or "manus"
-STANDARD_PALM_SIZE = 0.086
-# Diagnostic switch: False passes source Standard21 geometry through without
-# wrist centering, palm-frame rotation, or palm-size scaling.
-NORMALIZE_INPUT_HAND = False
 
 # WILOR ------------------------------------------------------------------------
 
@@ -49,7 +45,7 @@ MANUS_STALE_SECONDS = 0.20
 MANUS_PINCH_COMPENSATION = True
 # Outward finger-pad axis in every MANUS Tip node's local frame.
 MANUS_PAD_LOCAL_AXIS = (0.0, 0.0, -1.0)
-# Thumb-pad alignment around the palm-local Thumb IP-to-TIP axis. The adapter
+# Thumb-pad alignment around the source-frame Thumb IP-to-TIP axis. The adapter
 # applies a positive angle for Left and a negative angle for Right.
 MANUS_THUMB_PAD_ROTATION_DEG = 45.0
 
@@ -82,6 +78,9 @@ ROBOT_JOINT_NAMES = (
 )
 # MMHand retarget --------------------------------------------------------------
 
+# Fixed position-residual scale in metres; does not rescale input geometry.
+RETARGET_POSITION_NORMALIZER_M = 0.086
+
 # 掌原点到拇指尖的人手向量缩放系数；1.0 表示不缩放。
 RETARGET_THUMB_TIP_SCALE = 1.0
 # 掌原点到拇指尖位置误差的损失权重。
@@ -99,8 +98,6 @@ RETARGET_INDEX_PAD_WEIGHT = 1.0
 RETARGET_MIDDLE_PAD_WEIGHT = 1.0
 RETARGET_RING_PAD_WEIGHT = 1.0
 RETARGET_LITTLE_PAD_WEIGHT = 1.0
-# 最终 21 个 MMHand 输出角的 One Euro 参数，角度单位 degree。
-RETARGET_ANGLE_FILTER = (1.0, 0.02, 1.0)
 # 每帧最多计算的不同 SLSQP 关节候选数；超限时采用最低损失候选。
 RETARGET_MAX_EVALUATIONS = 15
 # SLSQP 的目标和步长停止精度。
@@ -109,21 +106,21 @@ RETARGET_FTOL = 3e-5
 
 # Runtime output and viewer ----------------------------------------------------
 
-# 标准化 21 点 ROS 2 topic 名称。
-KEYPOINT_TOPIC = "/hand/keypoints"
-# 关键点 Float32MultiArray layout 标签：掌局部坐标、单位 m、掌尺寸 0.086 m。
-KEYPOINT_LAYOUT = "mmhand_teleop:keypoints:v1:palm_local_m:size=0.086"
-PAD_DIRECTION_TOPIC = "/hand/finger_pad_directions"
-PAD_DIRECTION_LAYOUT = "mmhand_teleop:finger_pad_directions:v1:palm_local_unit"
-# MMHand 21 关节原始 IK 目标 ROS 2 topic 名称。
-ROBOT_TOPIC = "/raw_ik_target"
+# 来源坐标中的 21 点 ROS 2 topic 名称。
+KEYPOINT_TOPIC = "/mmhand/keypoints"
+# 关键点 Float32MultiArray layout 标签：来源坐标、单位 m。
+KEYPOINT_LAYOUT = "mmhand_teleop:keypoints:v2:source_m"
+PAD_DIRECTION_TOPIC = "/mmhand/finger_pad_directions"
+PAD_DIRECTION_LAYOUT = "mmhand_teleop:finger_pad_directions:v2:source_unit"
+# MMHand 21 关节限位裁剪后的 IK 目标 ROS 2 topic 名称。
+ROBOT_TOPIC = "/mmhand/joint_angle_deg"
 # 机器人 Float32MultiArray layout 标签：J00～J20 顺序、单位 degree。
 ROBOT_LAYOUT = "mmhand:J00-J20:urdf_deg"
 # 汇总左右图和两个 Viser iframe 的 HTTP dashboard 端口。
 WEB_PORT = 8080
-# 两个 Viser 服务端口：(标准化人手窗口, MMHand 机器人窗口)。
+# 两个 Viser 服务端口：(输入人手窗口, MMHand 机器人窗口)。
 VIEW_PORTS = (
-    8081,  # 第 1 项：标准化人手 Viser 端口。
+    8081,  # 第 1 项：输入人手 Viser 端口。
     8082,  # 第 2 项：MMHand Viser 端口。
 )
 # Dashboard JPEG 和状态文本的最大刷新频率，单位 Hz。

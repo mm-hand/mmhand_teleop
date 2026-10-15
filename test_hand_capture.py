@@ -18,7 +18,7 @@ from config import (
     ROBOT_TOPIC,
 )
 from input.frame import (
-    InitialJointAngles, InputFrame, initial_joint_angles_from_points, relative_hand,
+    InitialJointAngles, InputFrame, initial_joint_angles_from_points,
     hand0_middle_tip_distance,
 )
 from retarget import (
@@ -59,7 +59,7 @@ def hand():
             (x, y, 0), (x, y + 30, 0), (x, y + 50, 0), (x, y + 65, 0)
         )
     points[1:5] = ((-30, 15, 0), (-45, 25, 0), (-58, 34, 4), (-70, 42, 8))
-    return relative_hand(points)[0]
+    return points / 1000.0
 
 
 class RetargetTests(unittest.TestCase):
@@ -512,7 +512,7 @@ class RetargetTests(unittest.TestCase):
             little_gradient[4:] - without[4:], 0.0, atol=1e-15
         )
 
-    def test_output_filter_and_pause(self):
+    def test_unfiltered_output_and_pause(self):
         retargeter = Retargeter(self.model)
         first, _ = retargeter.solve(self.points, 0.0, PAD_DIRECTIONS, self.angles)
         raw = retargeter.q.copy()
@@ -521,7 +521,12 @@ class RetargetTests(unittest.TestCase):
         moved[4] += (.02, -.01, .01)
         moved_angles = initial_joint_angles_from_points(moved)
         second, _ = retargeter.solve(moved, 1 / 30, PAD_DIRECTIONS, moved_angles)
-        self.assertTrue(np.all(np.abs(second - first) <= np.abs(retargeter.q - first) + 1e-12))
+        np.testing.assert_array_equal(second, np.clip(
+            retargeter.q, self.model.lower, self.model.upper
+        ))
+        self.assertTrue(np.all(second >= self.model.lower))
+        self.assertTrue(np.all(second <= self.model.upper))
+        self.assertNotIn("output_filter", retargeter.last_stage_timings_ms)
         retargeter.pause()
         self.assertFalse(retargeter.has_previous)
         np.testing.assert_array_equal(retargeter.q, self.model.seed)
@@ -584,6 +589,7 @@ class RetargetTests(unittest.TestCase):
         self.assertEqual(_render_time_text(None), "render waiting")
         self.assertEqual(_render_time_text(0.26), "render 0.3 ms")
         self.assertIn("SLSQP           3.2 ms", _timing_breakdown_text({"slsqp": 3.2}))
+        self.assertNotIn("output filter", _timing_breakdown_text({"output_filter": 1.0}))
         self.assertEqual(
             _angle_text(
                 "Input thumb", (), np.empty(0), 0.086, 0.1234, 0.0567, 0.0789
@@ -676,15 +682,20 @@ class RetargetTests(unittest.TestCase):
             output.close()
         self.assertEqual(
             [publisher.topic for publisher in node.publishers],
-            [KEYPOINT_TOPIC, PAD_DIRECTION_TOPIC, ROBOT_TOPIC],
+            ["/mmhand/keypoints", "/mmhand/finger_pad_directions",
+             "/mmhand/joint_angle_deg"],
         )
+        for publisher, expected in zip(node.publishers, (
+            self.points.ravel(), PAD_DIRECTIONS.ravel(), np.arange(21)
+        )):
+            np.testing.assert_allclose(publisher.messages[0].data, expected)
         sizes = [len(publisher.messages[0].data) for publisher in node.publishers]
         self.assertEqual(sizes, [63, 15, 21])
         labels = [publisher.messages[0].layout.dim[0].label for publisher in node.publishers]
         self.assertEqual(labels, [
-            f"{KEYPOINT_LAYOUT}:hand=Left",
-            f"{PAD_DIRECTION_LAYOUT}:hand=Left",
-            ROBOT_LAYOUT,
+            "mmhand_teleop:keypoints:v2:source_m:hand=Left",
+            "mmhand_teleop:finger_pad_directions:v2:source_unit:hand=Left",
+            "mmhand:J00-J20:urdf_deg",
         ])
 
 if __name__ == "__main__":

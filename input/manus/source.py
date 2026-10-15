@@ -16,7 +16,6 @@ from config import (
     MANUS_STALE_SECONDS,
     MANUS_THUMB_DIP_TO_PIP_GAIN,
     MANUS_THUMB_PIP_DIP_SCALE,
-    NORMALIZE_INPUT_HAND,
 )
 from input.frame import InitialJointAngles, InputFrame
 from .adapter import MANUS_TO_STANDARD21, adapt_raw_skeleton, handedness_from_node_info
@@ -422,7 +421,6 @@ class ManusSource:
             initial_joint_angles=initial_angles,
             raw_palm_length=adapted.raw_palm_length,
             raw_palm_width=adapted.raw_palm_width,
-            points_normalized=NORMALIZE_INPUT_HAND,
         )
 
     def close(self):

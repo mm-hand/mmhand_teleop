@@ -93,7 +93,6 @@ def _timing_breakdown_text(timings=None):
         ("worker_queue", "worker queue"),
         ("targets", "targets"),
         ("slsqp", "SLSQP"),
-        ("output_filter", "output filter"),
         ("final_loss", "final loss"),
         ("solver_overhead", "solver overhead"),
         ("solve_total", "solve total"),
@@ -139,13 +138,13 @@ def _vector_group_info(group):
         return (
             f"thumb tip · weight {C.RETARGET_THUMB_TIP_WEIGHT:g}{disabled} · "
             f"scale {C.RETARGET_THUMB_TIP_SCALE:g} · "
-            f"normalizer {1000 * C.STANDARD_PALM_SIZE:g} mm"
+            f"normalizer {1000 * C.RETARGET_POSITION_NORMALIZER_M:g} mm"
         )
     if group == "fingertip_vectors":
         return (
             f"fingertip vectors · shared weight "
             f"{C.RETARGET_FINGERTIP_VECTOR_WEIGHT:g} · "
-            f"normalizer {1000 * C.STANDARD_PALM_SIZE:g} mm"
+            f"normalizer {1000 * C.RETARGET_POSITION_NORMALIZER_M:g} mm"
         )
     if group == "thumb_pad":
         configured = C.RETARGET_THUMB_PAD_WEIGHT
@@ -216,7 +215,7 @@ def _human_residual_vector_data(points, directions):
 
 
 def _robot_residual_vector_data(model, q):
-    """Build scene geometry and exact filtered-robot loss feature vectors."""
+    """Build scene geometry and exact robot loss feature vectors."""
 
     q = np.asarray(q, float)
     values = model.features(q)[0]
@@ -321,17 +320,17 @@ class Viewer:
 
         self.servers = [viser.ViserServer(port=port) for port in VIEW_PORTS]
         self.model = model
-        normalized, robot_server = self.servers
+        input_server, robot_server = self.servers
         self._camera(
-            normalized,
+            input_server,
             (-0.26, 0, 0.06),
             (0, 0, 0.06),
             (0, 0.2588190451, 0.9659258263),
             42,
         )
         self._camera(robot_server, *_robot_camera_pose(model), 42)
-        self.human_frame = normalized.scene.add_frame("/hand", show_axes=False)
-        self.human_retarget_frame = normalized.scene.add_frame(
+        self.human_frame = input_server.scene.add_frame("/hand", show_axes=False)
+        self.human_retarget_frame = input_server.scene.add_frame(
             "/hand/retarget_frame",
             show_axes=True,
             axes_length=PALM_FRAME_AXIS_LENGTH,
@@ -340,7 +339,7 @@ class Viewer:
             visible=False,
         )
         empty_hand = np.zeros((21, 3), np.float32)
-        self.human_cloud = normalized.scene.add_point_cloud(
+        self.human_cloud = input_server.scene.add_point_cloud(
             "/hand/points",
             empty_hand,
             (60, 170, 255),
@@ -348,14 +347,14 @@ class Viewer:
             point_shape="circle",
             visible=False,
         )
-        self.human_bones = normalized.scene.add_line_segments(
+        self.human_bones = input_server.scene.add_line_segments(
             "/hand/bones",
             empty_hand[np.asarray(SKELETON_EDGES)],
             (60, 170, 255),
             line_width=4,
             visible=False,
         )
-        self.pad_directions = normalized.scene.add_arrows(
+        self.pad_directions = input_server.scene.add_arrows(
             "/hand/pad_directions",
             np.zeros((5, 2, 3), np.float32),
             (255, 150, 70),
@@ -365,7 +364,7 @@ class Viewer:
             visible=False,
         )
         self.human_angle_arcs = tuple(
-            normalized.scene.add_line_segments(
+            input_server.scene.add_line_segments(
                 f"/hand/thumb_{name}_angle", np.zeros((26, 2, 3), np.float32),
                 color, line_width=4, visible=False,
             )
@@ -406,7 +405,7 @@ class Viewer:
         self.vector_lock = threading.Lock()
         self.vector_group = "fingertip_vectors"
         self.human_vector_handles = self._add_residual_vector_handles(
-            normalized, "/hand/residual_vectors"
+            input_server, "/hand/residual_vectors"
         )
         self.robot_vector_handles = self._add_residual_vector_handles(
             robot_server, "/robot/residual_vectors"
@@ -417,8 +416,8 @@ class Viewer:
         self.loss_text = _loss_text()
         self.human_angle_text = _angle_text("Input thumb", (), None)
         self.robot_angle_text = _angle_text("MMHand thumb", (), None)
-        self.normalization_latency_text = self.retarget_latency_text = "waiting"
-        self.normalized_render_text = self.robot_render_text = _render_time_text(None)
+        self.input_latency_text = self.retarget_latency_text = "waiting"
+        self.input_render_text = self.robot_render_text = _render_time_text(None)
         self.retarget_timings_text = _timing_breakdown_text()
         self.preview = cv2.imencode(".jpg", np.zeros((360, 1280, 3), np.uint8))[1].tobytes()
         self._start_dashboard()
@@ -492,7 +491,7 @@ class Viewer:
             self._apply_vector_visibility()
 
     def _update_residual_vectors(self, frame, robot):
-        """Refresh paired human targets and filtered robot feature vectors."""
+        """Refresh paired human targets and robot feature vectors."""
 
         human = robot_data = None
         if frame.points is not None and frame.finger_pad_directions is not None:
@@ -538,7 +537,7 @@ class Viewer:
 
     def _start_dashboard(self):
         owner = self
-        normalized_port, robot_port = [server.get_port() for server in self.servers]
+        input_port, robot_port = [server.get_port() for server in self.servers]
         page = f"""<!doctype html><html><head><meta charset="utf-8">
 <title>mmhand_teleop</title><style>
 *{{box-sizing:border-box}} body{{margin:0;height:100vh;background:#101318;color:#eef;
@@ -570,19 +569,19 @@ border-radius:6px;background:#101318ee;color:#dff;font:12px sans-serif}}
 <option value="fingertip_vectors" selected>Fingertip vectors</option>
 <option value="thumb_pad">Thumb pad</option><option value="finger_pads">Finger pads</option>
 </select><span id="vectorInfo"></span></div>
-<section class="panel"><h2>Input hand <span class="latency" id="normalizationLatency">waiting</span><span class="render-time" id="normalizedRender">render waiting</span></h2><pre class="angles" id="humanAngles">Input thumb\nwaiting</pre><iframe id="normalized"></iframe></section>
+<section class="panel"><h2>Input hand <span class="latency" id="inputLatency">waiting</span><span class="render-time" id="inputRender">render waiting</span></h2><pre class="angles" id="humanAngles">Input thumb\nwaiting</pre><iframe id="input"></iframe></section>
 <section class="panel"><h2>Retargeted MMHand <span class="latency" id="retargetLatency">waiting</span><span class="render-time" id="robotRender">render waiting</span></h2><pre class="timings" id="retargetTimings">waiting</pre><pre class="angles" id="robotAngles">MMHand thumb\nwaiting</pre><iframe id="robot"></iframe></section>
 <script>
 const host=location.hostname, statusText=document.getElementById("status"),
 previewImage=document.getElementById("preview"),lossText=document.getElementById("losses"),
 humanAngles=document.getElementById("humanAngles"),robotAngles=document.getElementById("robotAngles");
-const normalizationLatency=document.getElementById("normalizationLatency"),
+const inputLatency=document.getElementById("inputLatency"),
 retargetLatency=document.getElementById("retargetLatency"),
-normalizedRender=document.getElementById("normalizedRender"),
+inputRender=document.getElementById("inputRender"),
 robotRender=document.getElementById("robotRender");
 const retargetTimings=document.getElementById("retargetTimings"),
 vectorGroup=document.getElementById("vectorGroup"),vectorInfo=document.getElementById("vectorInfo");
-for(const [id,port] of [["normalized",{normalized_port}],["robot",{robot_port}]])
+for(const [id,port] of [["input",{input_port}],["robot",{robot_port}]])
   document.getElementById(id).src=`http://${{host}}:${{port}}`;
 vectorGroup.addEventListener("change",async()=>{{
   try{{
@@ -605,9 +604,9 @@ async function refresh(){{
     previewUrl=nextUrl;
     statusText.textContent=state.status;lossText.textContent=state.losses;
     humanAngles.textContent=state.human_angles;robotAngles.textContent=state.robot_angles;
-    normalizationLatency.textContent=state.normalization_latency;
+    inputLatency.textContent=state.input_latency;
     retargetLatency.textContent=state.retarget_latency;
-    normalizedRender.textContent=state.normalized_render;
+    inputRender.textContent=state.input_render;
     robotRender.textContent=state.robot_render;
     retargetTimings.textContent=state.retarget_timings;
     if(document.activeElement!==vectorGroup) vectorGroup.value=state.vector_group;
@@ -629,9 +628,9 @@ refresh();
                         "losses": owner.loss_text,
                         "human_angles": owner.human_angle_text,
                         "robot_angles": owner.robot_angle_text,
-                        "normalization_latency": owner.normalization_latency_text,
+                        "input_latency": owner.input_latency_text,
                         "retarget_latency": owner.retarget_latency_text,
-                        "normalized_render": owner.normalized_render_text,
+                        "input_render": owner.input_render_text,
                         "robot_render": owner.robot_render_text,
                         "retarget_timings": owner.retarget_timings_text,
                         "vector_group": owner.vector_group,
@@ -694,7 +693,7 @@ refresh();
         frame,
         robot=None,
         losses=None,
-        normalization_latency_ms=None,
+        input_latency_ms=None,
         retarget_latency_ms=None,
         retarget_timings_ms=None,
     ):
@@ -703,8 +702,8 @@ refresh();
             return False
         self.last_update = now
         self.status = frame.status
-        self.normalization_latency_text = _latency_text(
-            normalization_latency_ms if frame.points is not None else None
+        self.input_latency_text = _latency_text(
+            input_latency_ms if frame.points is not None else None
         )
         if losses is not None:
             self.loss_text = _loss_text(losses)
@@ -716,7 +715,7 @@ refresh();
         ok, encoded = cv2.imencode(".jpg", preview, (cv2.IMWRITE_JPEG_QUALITY, 82))
         if ok:
             self.preview = encoded.tobytes()
-        normalized_render_started = time.perf_counter()
+        input_render_started = time.perf_counter()
         points = frame.points
         if points is not None and frame.handedness in ("Left", "Right"):
             self.human_frame.wxyz = _human_view_wxyz(frame.handedness, points)
@@ -753,17 +752,10 @@ refresh();
                 "Input thumb", ("proximal", "distal"),
                 None if initial_angles is None else initial_angles.thumb_bends,
                 np.linalg.norm(points[5] - points[17]), middle_tip_x,
-                frame.raw_palm_length if frame.points_normalized else None,
-                frame.raw_palm_width if frame.points_normalized else None,
-                palm_width_label=(
-                    "palm width" if frame.points_normalized else "raw palm width"
-                ),
-                middle_tip_label=(
-                    "palm length" if frame.points_normalized else "raw palm length"
-                ),
+                frame.raw_palm_length, frame.raw_palm_width,
             )
-        self.normalized_render_text = _render_time_text(
-            (time.perf_counter() - normalized_render_started) * 1000.0
+        self.input_render_text = _render_time_text(
+            (time.perf_counter() - input_render_started) * 1000.0
             if visible else None
         )
         if robot is not None:

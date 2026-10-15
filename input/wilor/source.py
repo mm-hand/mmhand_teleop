@@ -19,10 +19,9 @@ from config import (
     WILOR_THUMB_PAD_ROTATION_DEG,
     WILOR_DIRECTION_FILTER,
     WILOR_POINT_FILTER,
-    NORMALIZE_INPUT_HAND,
 )
 from input.frame import (
-    InputFrame, initial_joint_angles_from_points, relative_hand,
+    InputFrame, initial_joint_angles_from_points,
     hand0_middle_tip_distance,
 )
 from one_euro import OneEuro
@@ -213,11 +212,9 @@ def mesh_hand(vertices, right, regressor, faces):
         normals[:, 0] *= -1
     raw_palm_length = hand0_middle_tip_distance(joints)
     raw_palm_width = float(np.linalg.norm(joints[5] - joints[17]))
-    points, directions = relative_hand(
-        joints, normals, normalize=NORMALIZE_INPUT_HAND
-    )
-    if points is None:
-        raise ValueError("Degenerate WiLoR hand")
+    points = joints.astype(float)
+    directions = normals.astype(float)
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
     directions[0] = rotate(
         directions[0], points[4] - points[3],
         np.radians(WILOR_THUMB_PAD_ROTATION_DEG) * (-1 if right else 1),
@@ -359,7 +356,6 @@ class WilorSource:
             initial_joint_angles=initial_angles,
             raw_palm_length=raw_palm_length,
             raw_palm_width=raw_palm_width,
-            points_normalized=NORMALIZE_INPUT_HAND,
         )
 
     def close(self):

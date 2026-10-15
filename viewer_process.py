@@ -20,7 +20,7 @@ class _ViewerUpdate:
     frame: object
     robot: np.ndarray | None
     losses: dict | None
-    normalization_latency_ms: float | None
+    input_latency_ms: float | None
     retarget_latency_ms: float | None
     retarget_timings_ms: dict | None
 
@@ -70,7 +70,7 @@ def _run_viewer(updates, stop_event, status, factory):
                 pending.frame,
                 pending.robot,
                 pending.losses,
-                normalization_latency_ms=pending.normalization_latency_ms,
+                input_latency_ms=pending.input_latency_ms,
                 retarget_latency_ms=pending.retarget_latency_ms,
                 retarget_timings_ms=pending.retarget_timings_ms,
             ):
@@ -192,7 +192,7 @@ class ViewerProcess:
         frame,
         robot=None,
         losses=None,
-        normalization_latency_ms=None,
+        input_latency_ms=None,
         retarget_latency_ms=None,
         retarget_timings_ms=None,
     ):
@@ -221,7 +221,7 @@ class ViewerProcess:
             frame=frame,
             robot=self._robot,
             losses=self._losses,
-            normalization_latency_ms=normalization_latency_ms,
+            input_latency_ms=input_latency_ms,
             retarget_latency_ms=self._retarget_latency_ms,
             retarget_timings_ms=self._retarget_timings_ms,
         )

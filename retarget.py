@@ -1,4 +1,4 @@
-"""Retarget normalized human-hand observations to the 21-DOF MMHand URDF."""
+"""Retarget source-frame human-hand observations to the 21-DOF MMHand URDF."""
 
 import xml.etree.ElementTree as ET
 from collections import defaultdict
@@ -12,7 +12,6 @@ from scipy.optimize import Bounds, minimize
 
 import config as C
 from input.frame import InitialJointAngles, compute_cmc_frame
-from one_euro import OneEuro
 
 EPS = 1e-9
 ROBOT_TIPS = ("5-tip_Link", "1-tip_Link", "2-tip_Link", "3-tip_Link", "4-tip_Link")
@@ -418,15 +417,14 @@ class RobotModel:
 
 
 class Retargeter:
-    """Solve bounded full-hand retargeting and filter the resulting joint vector."""
+    """Solve bounded full-hand retargeting and clip the resulting joint vector."""
 
     def __init__(self, model=None):
-        """Initialize the robot model, SLSQP bounds, warm start, and output filter."""
+        """Initialize the robot model, SLSQP bounds, and warm start."""
 
         self.model = RobotModel() if model is None else model
         self.bounds = Bounds(self.model.lower, self.model.upper)
         self.q = self.model.seed.copy()
-        self.output_filter = OneEuro(*C.RETARGET_ANGLE_FILTER)
         self.has_previous = False
         self.last_stage_timings_ms = {}
         self.options = {"ftol": C.RETARGET_FTOL, "disp": False}
@@ -480,7 +478,7 @@ class Retargeter:
         tip_loss, tip_gradient = self._term(
             values[0], jacobians[0], targets[0],
             C.RETARGET_THUMB_TIP_SCALE, C.RETARGET_THUMB_TIP_WEIGHT,
-            C.STANDARD_PALM_SIZE,
+            C.RETARGET_POSITION_NORMALIZER_M,
         )
         thumb_terms = tuple(
             self._term(
@@ -494,7 +492,7 @@ class Retargeter:
         )
         relative_term = self._term(
             values[2], jacobians[2], targets[2], 1.0,
-            C.RETARGET_FINGERTIP_VECTOR_WEIGHT, C.STANDARD_PALM_SIZE,
+            C.RETARGET_FINGERTIP_VECTOR_WEIGHT, C.RETARGET_POSITION_NORMALIZER_M,
         )
         pad_term = self._term(
             values[3][:1], jacobians[3][:1], targets[3][:1],
@@ -552,7 +550,7 @@ class Retargeter:
         finger_pad_directions=None,
         initial_joint_angles=None,
     ):
-        """Solve one frame, update the warm start, and return filtered joints."""
+        """Solve one frame, update the warm start, and return limit-clipped joints."""
 
         solve_started = time.perf_counter()
         self.last_stage_timings_ms = {}
@@ -607,11 +605,7 @@ class Retargeter:
         _, candidate, _ = best
         self.q = candidate.copy()
         self.has_previous = True
-        timestamp = time.monotonic() if timestamp is None else timestamp
-        filter_started = time.perf_counter()
-        output = np.radians(self.output_filter(np.degrees(candidate), timestamp))
-        output = np.clip(output, self.model.lower, self.model.upper)
-        output_filter_ms = (time.perf_counter() - filter_started) * 1000.0
+        output = np.clip(candidate, self.model.lower, self.model.upper)
         final_loss_started = time.perf_counter()
         losses = self._losses(output, targets)[2]
         final_loss_ms = (time.perf_counter() - final_loss_started) * 1000.0
@@ -620,11 +614,10 @@ class Retargeter:
             for name, value in losses.items()
         }
         solve_total_ms = (time.perf_counter() - solve_started) * 1000.0
-        named_ms = targets_ms + slsqp_ms + output_filter_ms + final_loss_ms
+        named_ms = targets_ms + slsqp_ms + final_loss_ms
         self.last_stage_timings_ms = {
             "targets": targets_ms,
             "slsqp": slsqp_ms,
-            "output_filter": output_filter_ms,
             "final_loss": final_loss_ms,
             "solver_overhead": max(0.0, solve_total_ms - named_ms),
             "solve_total": solve_total_ms,
@@ -632,10 +625,9 @@ class Retargeter:
         return output, losses
 
     def pause(self):
-        """Clear warm-start and output-filter state after tracking is interrupted."""
+        """Clear warm-start state after tracking is interrupted."""
 
         self.q = self.model.seed.copy()
-        self.output_filter.reset()
         self.has_previous = False
         self.last_stage_timings_ms = {}
 

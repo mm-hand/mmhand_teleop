@@ -2,8 +2,6 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from config import STANDARD_PALM_SIZE
-
 EPS = 1e-8
 
 FINGER_CHAINS = (
@@ -66,15 +64,14 @@ class InputFrame:
     ready: bool
     status: str
     # Outward unit normals for Thumb, Index, Middle, Ring, Little finger pads.
-    # Coordinates use the same palm-local tracking frame as points.
+    # Coordinates use the same source frame as points.
     finger_pad_directions: np.ndarray | None = None
     preview: np.ndarray | None = None
     initial_joint_angles: InitialJointAngles | None = None
-    # Direct Hand0-to-Middle-tip distance before palm-size normalization.
+    # Direct Hand0-to-Middle-tip distance before input filtering.
     raw_palm_length: float | None = None
-    # Index-to-Little MCP distance in source metres before palm-size normalization.
+    # Index-to-Little MCP distance in source metres before input filtering.
     raw_palm_width: float | None = None
-    points_normalized: bool = True
 
     @classmethod
     def empty(cls, timestamp, status, preview=None):
@@ -121,42 +118,6 @@ def _unit(vector, fallback=(1.0, 0.0, 0.0)):
         return vector / norm
     fallback = np.asarray(fallback, float)
     return fallback / max(np.linalg.norm(fallback), EPS)
-
-
-def relative_hand(points, directions=None, *, normalize=True):
-    """Optionally normalize Standard21 points and directions to the tracking frame."""
-    points = np.asarray(points, float)
-    if points.shape != (21, 3) or not np.isfinite(points).all():
-        raise ValueError("Hand landmarks must be finite with shape (21, 3)")
-    if not normalize:
-        if directions is None:
-            return points.copy(), None
-        directions = np.asarray(directions, float)
-        if directions.shape != (5, 3) or not np.isfinite(directions).all():
-            raise ValueError("Finger-pad directions must be finite with shape (5, 3)")
-        lengths = np.linalg.norm(directions, axis=1, keepdims=True)
-        if np.any(lengths < EPS):
-            raise ValueError("Finger-pad directions must be nonzero")
-        return points.copy(), directions / lengths
-    centered = points - points[0]
-    palm_size = np.mean([np.linalg.norm(centered[index]) for index in (5, 9, 13, 17)])
-    if palm_size < EPS:
-        return None, None
-    z_axis = _unit(centered[9])
-    x_axis = _unit(np.cross(centered[5] - centered[17], z_axis))
-    y_axis = _unit(np.cross(z_axis, x_axis))
-    rotation = np.column_stack((x_axis, y_axis, z_axis))
-    normalized = centered * STANDARD_PALM_SIZE / palm_size @ rotation
-    if directions is None:
-        return normalized, None
-    directions = np.asarray(directions, float)
-    if directions.shape != (5, 3) or not np.isfinite(directions).all():
-        raise ValueError("Finger-pad directions must be finite with shape (5, 3)")
-    local = directions @ rotation
-    lengths = np.linalg.norm(local, axis=1, keepdims=True)
-    if np.any(lengths < EPS):
-        raise ValueError("Finger-pad directions must be nonzero")
-    return normalized, local / lengths
 
 
 def compute_cmc_frame(points):
