@@ -59,6 +59,19 @@ VECTOR_ITEMS = {
     ),
 }
 
+# The Input hand panel always shows the palm toward the screen, fingers up,
+# at a fixed anatomical size. Retargeting still consumes the raw source frame.
+HUMAN_DISPLAY_PALM_WIDTH = 0.085  # m
+HUMAN_CAMERA_DISTANCE = 0.45  # m
+HUMAN_CAMERA_LOOK_AT_Y = 0.09  # m
+HUMAN_CAMERA_FOV = 42  # degrees
+HUMAN_SCALE_ALPHA = 0.5
+HUMAN_SCALE_MAX_STEP = 0.25
+HUMAN_SCALE_RESET_SECONDS = 2.0
+_DISPLAY_PERMUTATION = np.array(
+    ((0.0, 1.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+)
+
 
 def _loss_text(losses=None):
     lines = ["Weighted retarget loss"]
@@ -104,17 +117,32 @@ def _timing_breakdown_text(timings=None):
     )
 
 
-def _human_view_wxyz(handedness, points):
-    """Face the palm toward -X and level the Index-to-Little MCP line."""
-    right = handedness == "Right"
+def _human_display_frame(points, directions):
+    """Return the palm-on display rotation, source palm width, and CMC frame.
+
+    The returned matrix maps source geometry into a canonical view frame:
+    fingers point along +Y and the palmar side faces +Z (the camera).
+    """
+
     points = np.asarray(points, float)
-    side = points[5] - points[17]
-    if right:
-        side = side * (-1, -1, 1)
-    roll = -np.arctan2(side[2], side[1])
-    roll = (roll + np.pi / 2) % np.pi - np.pi / 2
-    cosine, sine = np.cos(roll / 2), np.sin(roll / 2)
-    return (0.0, 0.0, -sine, cosine) if right else (cosine, sine, 0.0, 0.0)
+    directions = np.asarray(directions, float)
+    _, cmc = compute_cmc_frame(points)
+    # WiLoR's pad directions already point outward from the palmar surface, so
+    # their mean is the volar normal and decides which side the camera sees.
+    volar = directions[1:].mean(axis=0)
+    length = np.linalg.norm(volar)
+    z_axis = cmc[:, 2].copy() if length <= 1e-8 else volar / length
+    x_axis = cmc[:, 0] - z_axis * np.dot(cmc[:, 0], z_axis)
+    length = np.linalg.norm(x_axis)
+    if length <= 1e-8:
+        raise ValueError("Degenerate human display axis")
+    x_axis /= length
+    y_axis = np.cross(z_axis, x_axis)
+    matrix = np.column_stack((x_axis, y_axis, z_axis)) @ _DISPLAY_PERMUTATION
+    palm_width = float(np.linalg.norm(points[17] - points[5]))
+    if not np.isfinite(matrix).all() or not np.isfinite(palm_width) or palm_width <= 0:
+        raise ValueError("Degenerate human palm width")
+    return matrix, palm_width, cmc
 
 
 def _frame_wxyz(frame):
@@ -323,10 +351,10 @@ class Viewer:
         input_server, robot_server = self.servers
         self._camera(
             input_server,
-            (-0.26, 0, 0.06),
-            (0, 0, 0.06),
-            (0, 0.2588190451, 0.9659258263),
-            42,
+            (0.0, HUMAN_CAMERA_LOOK_AT_Y, HUMAN_CAMERA_DISTANCE),
+            (0.0, HUMAN_CAMERA_LOOK_AT_Y, 0.0),
+            (0.0, 1.0, 0.0),
+            HUMAN_CAMERA_FOV,
         )
         self._camera(robot_server, *_robot_camera_pose(model), 42)
         self.human_frame = input_server.scene.add_frame("/hand", show_axes=False)
@@ -413,6 +441,10 @@ class Viewer:
         self.vector_available = {"human": False, "robot": False}
         self.last_robot = None
         self.last_update, self.status = 0.0, "WAITING"
+        self.human_display_matrix = None
+        self.human_display_scale = None
+        self.human_display_timestamp = None
+        self.human_display_handedness = None
         self.loss_text = _loss_text()
         self.human_angle_text = _angle_text("Input thumb", (), None)
         self.robot_angle_text = _angle_text("MMHand thumb", (), None)
@@ -452,11 +484,15 @@ class Viewer:
         return handles
 
     @staticmethod
-    def _write_residual_vector_handles(handles, data, pad_errors=None):
+    def _write_residual_vector_handles(
+        handles, data, pad_errors=None, transform=None
+    ):
         """Update one side's arrows and CMC-local value labels."""
 
         for group, items in handles.items():
             starts, ends, vectors = data[group]
+            if transform is not None:
+                starts, ends = transform(starts), transform(ends)
             direction = group in ("thumb_pad", "finger_pads")
             errors = None if pad_errors is None else pad_errors.get(group)
             for row, ((name, _), (arrow, label)) in enumerate(
@@ -490,11 +526,15 @@ class Viewer:
             self.vector_group = group
             self._apply_vector_visibility()
 
-    def _update_residual_vectors(self, frame, robot):
+    def _update_residual_vectors(self, frame, robot, human_transform=None):
         """Refresh paired human targets and robot feature vectors."""
 
         human = robot_data = None
-        if frame.points is not None and frame.finger_pad_directions is not None:
+        if (
+            human_transform is not None
+            and frame.points is not None
+            and frame.finger_pad_directions is not None
+        ):
             try:
                 human = _human_residual_vector_data(
                     frame.points, frame.finger_pad_directions
@@ -516,7 +556,8 @@ class Viewer:
         with self.vector_lock:
             if human is not None:
                 self._write_residual_vector_handles(
-                    self.human_vector_handles, human, pad_errors
+                    self.human_vector_handles, human, pad_errors,
+                    transform=human_transform,
                 )
             if robot_data is not None:
                 self._write_residual_vector_handles(
@@ -717,8 +758,7 @@ refresh();
             self.preview = encoded.tobytes()
         input_render_started = time.perf_counter()
         points = frame.points
-        if points is not None and frame.handedness in ("Left", "Right"):
-            self.human_frame.wxyz = _human_view_wxyz(frame.handedness, points)
+        human_transform = None
         visible = points is not None
         self.human_cloud.visible = self.human_bones.visible = visible
         self.pad_directions.visible = False
@@ -729,31 +769,87 @@ refresh();
             self.human_angle_text = _angle_text("Input thumb", (), None)
         else:
             points = np.asarray(points, float)
-            self.human_cloud.points = points.astype(np.float32)
-            self.human_bones.points = points[np.asarray(SKELETON_EDGES)].astype(np.float32)
             directions = np.asarray(frame.finger_pad_directions, float)
-            self.pad_directions.points = _arrow_points(points[TIP_INDICES], directions)
-            self.pad_directions.visible = True
-            _, arcs = _human_angle_segments(points)
-            for handle, segments in zip(self.human_angle_arcs, arcs):
-                handle.points, handle.visible = segments, True
-            initial_angles = frame.initial_joint_angles
-            middle_tip_x = None
+            matrix, palm_width = self.human_display_matrix, None
+            palm_frame = None
             try:
-                origin, palm_frame = compute_cmc_frame(points)
+                matrix, palm_width, palm_frame = _human_display_frame(
+                    points, directions
+                )
             except ValueError:
+                palm_frame = None
+            if matrix is None:
+                self.human_cloud.visible = self.human_bones.visible = False
                 self.human_retarget_frame.visible = False
+                self.human_angle_text = _angle_text("Input thumb", (), None)
             else:
-                middle_tip_x = hand0_middle_tip_distance(points)
-                self.human_retarget_frame.position = origin
-                self.human_retarget_frame.wxyz = _frame_wxyz(palm_frame)
-                self.human_retarget_frame.visible = True
-            self.human_angle_text = _angle_text(
-                "Input thumb", ("proximal", "distal"),
-                None if initial_angles is None else initial_angles.thumb_bends,
-                np.linalg.norm(points[5] - points[17]), middle_tip_x,
-                frame.raw_palm_length, frame.raw_palm_width,
-            )
+                if palm_width is not None:
+                    raw_scale = HUMAN_DISPLAY_PALM_WIDTH / palm_width
+                    reset = (
+                        self.human_display_scale is None
+                        or self.human_display_handedness != frame.handedness
+                        or self.human_display_timestamp is None
+                        or frame.timestamp - self.human_display_timestamp
+                        > HUMAN_SCALE_RESET_SECONDS
+                    )
+                    if reset:
+                        scale = raw_scale
+                    else:
+                        limit = self.human_display_scale * HUMAN_SCALE_MAX_STEP
+                        delta = float(np.clip(
+                            raw_scale - self.human_display_scale,
+                            -limit, limit,
+                        ))
+                        scale = (
+                            self.human_display_scale
+                            + HUMAN_SCALE_ALPHA * delta
+                        )
+                    self.human_display_scale = scale
+                    self.human_display_timestamp = frame.timestamp
+                else:
+                    scale = self.human_display_scale
+                self.human_display_matrix = matrix
+                self.human_display_handedness = frame.handedness
+                origin = points[1]
+
+                def to_display(value):
+                    """Map source-frame positions into the canonical view."""
+
+                    return (
+                        (np.asarray(value, float) - origin) @ matrix
+                    ) * scale
+
+                human_transform = to_display
+                display_points = to_display(points)
+                self.human_cloud.points = display_points.astype(np.float32)
+                self.human_bones.points = display_points[
+                    np.asarray(SKELETON_EDGES)
+                ].astype(np.float32)
+                self.pad_directions.points = to_display(
+                    _arrow_points(points[TIP_INDICES], directions)
+                ).astype(np.float32)
+                self.pad_directions.visible = True
+                _, arcs = _human_angle_segments(points)
+                for handle, segments in zip(self.human_angle_arcs, arcs):
+                    handle.points = to_display(segments).astype(np.float32)
+                    handle.visible = True
+                initial_angles = frame.initial_joint_angles
+                middle_tip_x = None
+                if palm_frame is not None:
+                    middle_tip_x = hand0_middle_tip_distance(points)
+                    self.human_retarget_frame.position = (0.0, 0.0, 0.0)
+                    self.human_retarget_frame.wxyz = _frame_wxyz(
+                        palm_frame.T @ matrix
+                    )
+                    self.human_retarget_frame.visible = True
+                else:
+                    self.human_retarget_frame.visible = False
+                self.human_angle_text = _angle_text(
+                    "Input thumb", ("proximal", "distal"),
+                    None if initial_angles is None else initial_angles.thumb_bends,
+                    np.linalg.norm(points[5] - points[17]), middle_tip_x,
+                    frame.raw_palm_length, frame.raw_palm_width,
+                )
         self.input_render_text = _render_time_text(
             (time.perf_counter() - input_render_started) * 1000.0
             if visible else None
@@ -795,7 +891,9 @@ refresh();
             for arc in self.robot_angle_arcs:
                 arc.visible = False
             self.robot_angle_text = _angle_text("MMHand thumb", (), None)
-        self._update_residual_vectors(frame, self.last_robot)
+        self._update_residual_vectors(
+            frame, self.last_robot, human_transform=human_transform
+        )
         return True
 
     def close(self):

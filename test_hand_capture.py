@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 import config as C
 from config import (
@@ -26,9 +27,11 @@ from retarget import (
 )
 from ros import RosOutput
 from viewer import (
+    HUMAN_DISPLAY_PALM_WIDTH,
     VECTOR_ITEMS, Viewer, _angle_text, _arrow_points,
-    _human_residual_vector_data, _latency_text, _loss_text, _pad_angle_errors,
-    _render_time_text, _robot_residual_vector_data, _timing_breakdown_text,
+    _human_display_frame, _human_residual_vector_data, _latency_text,
+    _loss_text, _pad_angle_errors, _render_time_text,
+    _robot_residual_vector_data, _timing_breakdown_text,
     _vector_group_info, _vector_label,
 )
 
@@ -697,6 +700,57 @@ class RetargetTests(unittest.TestCase):
             "mmhand_teleop:finger_pad_directions:v2:source_unit:hand=Left",
             "mmhand:J00-J20:urdf_deg",
         ])
+
+class HumanDisplayTests(unittest.TestCase):
+    def setUp(self):
+        self.points = hand()
+        self.directions = PAD_DIRECTIONS
+        self.matrix, self.width, self.cmc = _human_display_frame(
+            self.points, self.directions
+        )
+
+    def shown(self, points, matrix=None, width=None):
+        matrix = self.matrix if matrix is None else matrix
+        width = self.width if width is None else width
+        return (
+            (points - points[1]) @ matrix
+            * (HUMAN_DISPLAY_PALM_WIDTH / width)
+        )
+
+    def test_palm_faces_screen_and_fingers_point_up(self):
+        pads = self.directions @ self.matrix
+        np.testing.assert_allclose(
+            pads, np.tile((0.0, 0.0, 1.0), (5, 1)), atol=1e-9
+        )
+        fingers = (self.points[9] - self.points[0]) @ self.matrix
+        np.testing.assert_allclose(
+            fingers / np.linalg.norm(fingers), (0.0, 1.0, 0.0), atol=1e-9
+        )
+        shown = self.shown(self.points)
+        self.assertAlmostEqual(
+            np.linalg.norm(shown[17] - shown[5]), HUMAN_DISPLAY_PALM_WIDTH
+        )
+        self.assertGreater(shown[4, 0], shown[5, 0])
+
+    def test_display_is_invariant_to_source_pose_and_size(self):
+        rotation = Rotation.from_euler(
+            "xyz", (27, -41, 63), degrees=True
+        ).as_matrix()
+        translation = np.array((0.12, -0.08, 0.35))
+        factor = 1.7
+        moved = self.points @ rotation.T * factor + translation
+        turned = self.directions @ rotation.T
+        matrix, width, _ = _human_display_frame(moved, turned)
+        np.testing.assert_allclose(
+            self.shown(self.points),
+            self.shown(moved, matrix, width),
+            atol=1e-9,
+        )
+
+    def test_degenerate_frame_is_rejected(self):
+        with self.assertRaises(ValueError):
+            _human_display_frame(np.zeros((21, 3)), self.directions)
+
 
 if __name__ == "__main__":
     unittest.main()
