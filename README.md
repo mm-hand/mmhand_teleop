@@ -40,7 +40,10 @@ python track.py --sim    # optional SAPIEN grasp simulation
 ```
 
 `--ros` and `--sim` are mutually exclusive. Open <http://localhost:8080>; the
-two 3D views are served on 8081 (input hand) and 8082 (MMHand).
+two 3D views are served on 8081 (input hand) and 8082 (MMHand). If one of these
+ports is already in use (for example by another dashboard), each server moves
+to the next free port and the `Dashboard: ...` URL printed at startup is the
+one to open.
 
 Only a ready left hand enters retargeting; a right hand is displayed only. With
 `INPUT_SOURCE = "manus"`, startup waits for a connected left glove and its

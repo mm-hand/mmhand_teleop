@@ -1,3 +1,4 @@
+import errno
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
@@ -68,6 +69,8 @@ HUMAN_CAMERA_FOV = 42  # degrees
 HUMAN_SCALE_ALPHA = 0.5
 HUMAN_SCALE_MAX_STEP = 0.25
 HUMAN_SCALE_RESET_SECONDS = 2.0
+# How many consecutive ports to try before giving up on the dashboard.
+DASHBOARD_PORT_ATTEMPTS = 100
 _DISPLAY_PERMUTATION = np.array(
     ((0.0, 1.0, 0.0), (-1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
 )
@@ -341,12 +344,52 @@ def _robot_camera_pose(model):
     )
 
 
+def _bind_dashboard_server(handler, port):
+    """Bind the dashboard HTTP socket, skipping ports that are occupied.
+
+    Viser already advances its own ports when one is busy, so the dashboard
+    must do the same. Otherwise an unrelated service listening on WEB_PORT
+    would fail the whole viewer (and with it the teleop session) even though
+    the two 3D views started normally.
+    """
+
+    for candidate in range(port, port + DASHBOARD_PORT_ATTEMPTS):
+        try:
+            return ThreadingHTTPServer(("0.0.0.0", candidate), handler)
+        except OSError as error:
+            if error.errno != errno.EADDRINUSE:
+                raise
+    raise RuntimeError(
+        f"No free dashboard port in "
+        f"{port}-{port + DASHBOARD_PORT_ATTEMPTS - 1}"
+    )
+
+
 class Viewer:
     def __init__(self, model):
+        # Track servers that already exist so a failed setup releases the
+        # ports instead of leaking them into the next run.
+        self.servers = []
+        self.http = None
+        self.http_thread = None
+        self.web_port = None
+        try:
+            self._start(model)
+        except BaseException:
+            try:
+                self.close()
+            except Exception:
+                pass
+            raise
+
+    def _start(self, model):
         import viser
         from viser.extras import ViserUrdf
 
-        self.servers = [viser.ViserServer(port=port) for port in VIEW_PORTS]
+        # Append one at a time so a failure still leaves the servers that
+        # already started reachable for cleanup.
+        for view_port in VIEW_PORTS:
+            self.servers.append(viser.ViserServer(port=view_port))
         self.model = model
         input_server, robot_server = self.servers
         self._camera(
@@ -453,7 +496,13 @@ class Viewer:
         self.retarget_timings_text = _timing_breakdown_text()
         self.preview = cv2.imencode(".jpg", np.zeros((360, 1280, 3), np.uint8))[1].tobytes()
         self._start_dashboard()
-        print(f"Dashboard: http://localhost:{WEB_PORT}")
+        print(f"Dashboard: http://localhost:{self.web_port}", flush=True)
+        if self.web_port != WEB_PORT:
+            print(
+                f"Dashboard port {WEB_PORT} is already in use; "
+                f"using {self.web_port}",
+                flush=True,
+            )
 
     @staticmethod
     def _add_residual_vector_handles(server, root):
@@ -725,8 +774,11 @@ refresh();
             def log_message(self, *_):
                 pass
 
-        self.http = ThreadingHTTPServer(("0.0.0.0", WEB_PORT), Handler)
-        self.http_thread = threading.Thread(target=self.http.serve_forever, daemon=True)
+        self.http = _bind_dashboard_server(Handler, WEB_PORT)
+        self.web_port = self.http.server_address[1]
+        self.http_thread = threading.Thread(
+            target=self.http.serve_forever, daemon=True
+        )
         self.http_thread.start()
 
     def update(
@@ -897,7 +949,13 @@ refresh();
         return True
 
     def close(self):
-        self.http.shutdown()
-        self.http.server_close()
+        """Stop the dashboard and Viser servers after any setup stage."""
+
+        if self.http is not None:
+            http, self.http = self.http, None
+            if self.http_thread is not None and self.http_thread.is_alive():
+                http.shutdown()
+            http.server_close()
         for server in self.servers:
             server.stop()
+        self.servers = []

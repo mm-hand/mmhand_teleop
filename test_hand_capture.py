@@ -29,6 +29,7 @@ from ros import RosOutput
 from viewer import (
     HUMAN_DISPLAY_PALM_WIDTH,
     VECTOR_ITEMS, Viewer, _angle_text, _arrow_points,
+    _bind_dashboard_server,
     _human_display_frame, _human_residual_vector_data, _latency_text,
     _loss_text, _pad_angle_errors, _render_time_text,
     _robot_residual_vector_data, _timing_breakdown_text,
@@ -645,6 +646,20 @@ class RetargetTests(unittest.TestCase):
                 self.fail("viewer child error was not propagated")
         finally:
             viewer.close()
+
+    def test_dashboard_skips_occupied_web_port(self):
+        import socket
+        from http.server import BaseHTTPRequestHandler
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as busy:
+            busy.bind(("0.0.0.0", 0))
+            busy.listen(1)
+            port = busy.getsockname()[1]
+            server = _bind_dashboard_server(BaseHTTPRequestHandler, port)
+            try:
+                self.assertGreater(server.server_address[1], port)
+            finally:
+                server.server_close()
 
     def test_ros_contract(self):
         class Message:
