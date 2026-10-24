@@ -1,6 +1,7 @@
 import errno
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import socket
 import threading
 import time
 
@@ -125,15 +126,19 @@ def _human_display_frame(points, directions):
 
     The returned matrix maps source geometry into a canonical view frame:
     fingers point along +Y and the palmar side faces +Z (the camera).
+    ``directions`` may be None when the source has no fingertip pointing.
     """
 
     points = np.asarray(points, float)
-    directions = np.asarray(directions, float)
     _, cmc = compute_cmc_frame(points)
     # WiLoR's pad directions already point outward from the palmar surface, so
     # their mean is the volar normal and decides which side the camera sees.
-    volar = directions[1:].mean(axis=0)
-    length = np.linalg.norm(volar)
+    # Without them (MediaPipe) the CMC normal below is used instead.
+    volar = (
+        None if directions is None
+        else np.asarray(directions, float)[1:].mean(axis=0)
+    )
+    length = 0.0 if volar is None else np.linalg.norm(volar)
     z_axis = cmc[:, 2].copy() if length <= 1e-8 else volar / length
     x_axis = cmc[:, 0] - z_axis * np.dot(cmc[:, 0], z_axis)
     length = np.linalg.norm(x_axis)
@@ -354,10 +359,14 @@ def _bind_dashboard_server(handler, port):
     """
 
     for candidate in range(port, port + DASHBOARD_PORT_ATTEMPTS):
+        with socket.socket() as probe:
+            probe.settimeout(0.2)
+            if probe.connect_ex(("127.0.0.1", candidate)) == 0:
+                continue
         try:
             return ThreadingHTTPServer(("0.0.0.0", candidate), handler)
         except OSError as error:
-            if error.errno != errno.EADDRINUSE:
+            if error.errno not in (errno.EADDRINUSE, errno.EACCES):
                 raise
     raise RuntimeError(
         f"No free dashboard port in "
@@ -821,7 +830,10 @@ refresh();
             self.human_angle_text = _angle_text("Input thumb", (), None)
         else:
             points = np.asarray(points, float)
-            directions = np.asarray(frame.finger_pad_directions, float)
+            directions = (
+                None if frame.finger_pad_directions is None
+                else np.asarray(frame.finger_pad_directions, float)
+            )
             matrix, palm_width = self.human_display_matrix, None
             palm_frame = None
             try:
@@ -877,10 +889,11 @@ refresh();
                 self.human_bones.points = display_points[
                     np.asarray(SKELETON_EDGES)
                 ].astype(np.float32)
-                self.pad_directions.points = to_display(
-                    _arrow_points(points[TIP_INDICES], directions)
-                ).astype(np.float32)
-                self.pad_directions.visible = True
+                if directions is not None:
+                    self.pad_directions.points = to_display(
+                        _arrow_points(points[TIP_INDICES], directions)
+                    ).astype(np.float32)
+                    self.pad_directions.visible = True
                 _, arcs = _human_angle_segments(points)
                 for handle, segments in zip(self.human_angle_arcs, arcs):
                     handle.points = to_display(segments).astype(np.float32)

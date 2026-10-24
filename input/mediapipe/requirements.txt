@@ -1,0 +1,7 @@
+# Install with --no-deps so the environment's OpenCV is kept:
+#   python -m pip install --no-deps -r input/mediapipe/requirements.txt
+mediapipe>=1.0,<2
+absl-py
+flatbuffers
+sounddevice
+matplotlib

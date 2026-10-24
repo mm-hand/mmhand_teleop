@@ -1,14 +1,18 @@
 """Latest-frame OpenCV camera."""
 
+import os
 import threading
 import time
 
 import cv2
 
+# DirectShow is the most compatible Windows webcam backend; Linux stays on V4L2.
+_BACKEND = cv2.CAP_DSHOW if os.name == "nt" else cv2.CAP_V4L2
+
 
 class OpenCVCamera:
     def __init__(self, device, width, height, fps):
-        self.capture = cv2.VideoCapture(device, cv2.CAP_V4L2)
+        self.capture = cv2.VideoCapture(device, _BACKEND)
         if not self.capture.isOpened():
             raise RuntimeError(f"Cannot open camera {device!r}")
         for prop, value in ((cv2.CAP_PROP_FRAME_WIDTH, width),

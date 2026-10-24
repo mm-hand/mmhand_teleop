@@ -51,6 +51,8 @@ class RosOutput:
             f"{KEYPOINT_LAYOUT}:hand={frame.handedness}",
             (21, 3),
         )
+        if frame.finger_pad_directions is None:
+            return
         self.publish(
             self.direction_publisher,
             frame.finger_pad_directions,

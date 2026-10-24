@@ -7,12 +7,17 @@ WILOR_ASSET_DIR = _ROOT / "input/wilor/assets"
 
 # Input -----------------------------------------------------------------------
 
-INPUT_SOURCE = "manus"  # "wilor" or "manus"
+INPUT_SOURCE = "mediapipe"  # "mediapipe", "wilor", or "manus"
+
+# Camera (WiLoR and MediaPipe) -------------------------------------------------
+
+# Windows: integer camera index (0 = built-in camera). Linux: V4L2 index or
+# "/dev/videoN" path.
+CAMERA_DEVICE = 0
+CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS = 640, 480, 30
 
 # WILOR ------------------------------------------------------------------------
 
-CAMERA_DEVICE = "/dev/video4"  # V4L2 index or /dev/videoN path
-CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS = 640, 480, 30
 WILOR_DEVICE_ID = 0
 WILOR_CONFIDENCE = 0.30
 WILOR_IOU = 0.50
@@ -21,6 +26,17 @@ WILOR_CROP_FACTOR = 2.0
 WILOR_THUMB_PAD_ROTATION_DEG = 45.0
 WILOR_POINT_FILTER = (0.5, 1.0, 1.0)
 WILOR_DIRECTION_FILTER = (0.5, 0.25, 1.0)
+
+# MediaPipe ---------------------------------------------------------------------
+
+# HandLandmarker task model; download it from the link in README.md.
+MEDIAPIPE_MODEL_PATH = _ROOT / "input/mediapipe/assets/hand_landmarker.task"
+# MediaPipe world landmarks are already in metres; calibrate if the fingertip
+# vectors look systematically short or long.
+MEDIAPIPE_POSITION_SCALE_TO_M = 1.0
+# One Euro filter for the world-landmark points. MediaPipe has no fingertip
+# pointing, so there is no direction filter.
+MEDIAPIPE_POINT_FILTER = (0.5, 1.0, 1.0)
 
 # MANUS ------------------------------------------------------------------------
 
@@ -116,7 +132,7 @@ PAD_DIRECTION_LAYOUT = "mmhand_teleop:finger_pad_directions:v2:source_unit"
 ROBOT_TOPIC = "/mmhand/joint_angle_deg"
 # 机器人 Float32MultiArray layout 标签：J00～J20 顺序、单位 degree。
 ROBOT_LAYOUT = "mmhand:J00-J20:urdf_deg"
-# 汇总左右图和两个 Viser iframe 的 HTTP dashboard 端口。
+# 汇总左右图和两个 Viser iframe 的 HTTP dashboard 端口；被占用时自动换空闲端口。
 WEB_PORT = 8080
 # 两个 Viser 服务端口：(输入人手窗口, MMHand 机器人窗口)。
 VIEW_PORTS = (

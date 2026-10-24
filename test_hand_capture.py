@@ -24,6 +24,7 @@ from input.frame import (
 )
 from retarget import (
     Retargeter, RetargetWorker, RobotModel, compute_cmc_frame,
+    human_vector_features,
 )
 from ros import RosOutput
 from viewer import (
@@ -220,6 +221,11 @@ class RetargetTests(unittest.TestCase):
                 0.0, self.points, "Left", True, "TRACKING",
                 finger_pad_directions=PAD_DIRECTIONS,
             )
+        optional = InputFrame(
+            0.0, self.points, "Left", True, "TRACKING",
+            initial_joint_angles=self.angles,
+        )
+        self.assertIsNone(optional.finger_pad_directions)
 
     def test_frames_and_direct_fingers(self):
         origin, rotation = compute_cmc_frame(self.points)
@@ -469,10 +475,33 @@ class RetargetTests(unittest.TestCase):
         )
         self.assertIn("thumb pad", _loss_text(losses))
 
-        with self.assertRaisesRegex(ValueError, "required"):
+        with self.assertRaisesRegex(ValueError, "Initial joint angles"):
             Retargeter(self.model).solve(self.points)
         for bad in (np.zeros((20, 3)), np.full((21, 3), np.nan)):
             self.assertIsNone(Retargeter(self.model).solve(bad, finger_pad_directions=PAD_DIRECTIONS))
+
+    def test_missing_finger_pad_directions_disable_pad_losses(self):
+        self.assertIsNone(human_vector_features(self.points, None)[4])
+        retargeter = Retargeter(self.model)
+        targets = retargeter._targets(
+            self.points, finger_pad_directions=None,
+            initial_joint_angles=self.angles,
+        )
+        self.assertIsNone(targets[3])
+        q = (self.model.lower + self.model.upper) / 2
+        loss, gradient, terms = retargeter._losses(q, targets)
+        self.assertTrue(np.isfinite(loss))
+        self.assertTrue(np.isfinite(gradient).all())
+        self.assertEqual((terms["thumb_pad"], terms["finger_pads"]), (0.0, 0.0))
+        solved, losses = retargeter.solve(self.points, 0.0, None, self.angles)
+        self.assertIsNotNone(solved)
+        self.assertEqual(
+            (losses["thumb_pad"], losses["finger_pads"]), (0.0, 0.0)
+        )
+        self.assertAlmostEqual(
+            sum(value for name, value in losses.items() if name != "total"),
+            losses["total"],
+        )
 
     def test_four_finger_pad_residual_has_independent_weights(self):
         target_q = self.model.seed.copy()
@@ -696,6 +725,10 @@ class RetargetTests(unittest.TestCase):
                 finger_pad_directions=PAD_DIRECTIONS,
                 initial_joint_angles=self.angles,
             ))
+            output.hand(InputFrame(
+                2.0, self.points, "Left", True, "TRACKING",
+                initial_joint_angles=self.angles,
+            ))
             output.joints(np.arange(21))
             output.close()
         self.assertEqual(
@@ -715,6 +748,10 @@ class RetargetTests(unittest.TestCase):
             "mmhand_teleop:finger_pad_directions:v2:source_unit:hand=Left",
             "mmhand:J00-J20:urdf_deg",
         ])
+        self.assertEqual(
+            [len(publisher.messages) for publisher in node.publishers],
+            [2, 1, 1],
+        )
 
 class HumanDisplayTests(unittest.TestCase):
     def setUp(self):
@@ -765,6 +802,12 @@ class HumanDisplayTests(unittest.TestCase):
     def test_degenerate_frame_is_rejected(self):
         with self.assertRaises(ValueError):
             _human_display_frame(np.zeros((21, 3)), self.directions)
+
+    def test_display_without_pad_directions(self):
+        matrix, width, _ = _human_display_frame(self.points, None)
+        self.assertTrue(np.isfinite(matrix).all())
+        self.assertAlmostEqual(width, self.width)
+        np.testing.assert_allclose(matrix.T @ matrix, np.eye(3), atol=1e-12)
 
 
 if __name__ == "__main__":

@@ -85,23 +85,28 @@ def human_thumb_geometry(points):
     return segments, np.asarray(angles), np.asarray(axes)
 
 
-def human_vector_features(points, directions):
-    """Return the spatial and pad-direction targets used by retarget loss."""
+def human_vector_features(points, directions=None):
+    """Return the spatial and pad-direction targets used by retarget loss.
+
+    ``pads`` is None when the source cannot observe fingertip pointing.
+    """
 
     points = np.asarray(points, float)
-    directions = np.asarray(directions, float)
     if points.shape != (21, 3) or not np.isfinite(points).all():
         raise ValueError("Retargeting requires 21 finite points")
-    if directions.shape != (5, 3) or not np.isfinite(directions).all():
-        raise ValueError("Invalid finger-pad directions")
     origin, rotation = compute_cmc_frame(points)
     local = (points - origin) @ rotation
+    thumbs = local[4:5]
+    relative = local[[8, 12, 16, 20]] - local[4]
+    if directions is None:
+        return origin, rotation, thumbs, relative, None
+    directions = np.asarray(directions, float)
+    if directions.shape != (5, 3) or not np.isfinite(directions).all():
+        raise ValueError("Invalid finger-pad directions")
     pads = np.asarray([
         _checked_unit(direction @ rotation) for direction in directions
     ])
-    return origin, rotation, local[4:5], (
-        local[[8, 12, 16, 20]] - local[4]
-    ), pads
+    return origin, rotation, thumbs, relative, pads
 
 
 def _rotation(axis, angle):
@@ -442,10 +447,12 @@ class Retargeter:
         finger_pad_directions=None,
         initial_joint_angles=None,
     ):
-        """Build spatial, directional, and angle targets in the CMC frame."""
+        """Build spatial, directional, and angle targets in the CMC frame.
 
-        if finger_pad_directions is None:
-            raise ValueError("Finger-pad directions are required for retargeting")
+        ``finger_pad_directions`` is optional; without it the pad targets are
+        None and their losses are disabled.
+        """
+
         _, _, thumb_tip, relative, pads = human_vector_features(
             points, finger_pad_directions
         )
@@ -494,14 +501,18 @@ class Retargeter:
             values[2], jacobians[2], targets[2], 1.0,
             C.RETARGET_FINGERTIP_VECTOR_WEIGHT, C.RETARGET_POSITION_NORMALIZER_M,
         )
+        # Without fingertip pointing (MediaPipe) both pad terms are exactly 0.
+        pads = targets[3]
+        pad_gain = 0.0 if pads is None else 1.0
+        pad_targets = np.zeros((5, 3)) if pads is None else pads
         pad_term = self._term(
-            values[3][:1], jacobians[3][:1], targets[3][:1],
-            1.0, C.RETARGET_THUMB_PAD_WEIGHT / 3,
+            values[3][:1], jacobians[3][:1], pad_targets[:1],
+            1.0, pad_gain * C.RETARGET_THUMB_PAD_WEIGHT / 3,
         )
         finger_pad_terms = tuple(
             self._term(
                 values[3][row:row + 1], jacobians[3][row:row + 1],
-                targets[3][row:row + 1], 1.0, weight / 3,
+                pad_targets[row:row + 1], 1.0, pad_gain * weight / 3,
             )
             for row, weight in enumerate((
                 C.RETARGET_INDEX_PAD_WEIGHT,

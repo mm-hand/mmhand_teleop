@@ -64,7 +64,8 @@ class InputFrame:
     ready: bool
     status: str
     # Outward unit normals for Thumb, Index, Middle, Ring, Little finger pads.
-    # Coordinates use the same source frame as points.
+    # Coordinates use the same source frame as points. None when the source
+    # cannot observe fingertip pointing (MediaPipe); pad losses are then off.
     finger_pad_directions: np.ndarray | None = None
     preview: np.ndarray | None = None
     initial_joint_angles: InitialJointAngles | None = None
@@ -89,13 +90,14 @@ class InputFrame:
                 raise ValueError("Raw palm width requires hand landmarks")
             return
         points = np.asarray(self.points, float)
-        directions = np.asarray(self.finger_pad_directions, float)
         if points.shape != (21, 3) or not np.isfinite(points).all():
             raise ValueError("Hand landmarks must be finite with shape (21, 3)")
-        if directions.shape != (5, 3) or not np.isfinite(directions).all():
-            raise ValueError("Finger-pad directions are required with shape (5, 3)")
-        if not np.allclose(np.linalg.norm(directions, axis=1), 1, atol=1e-5):
-            raise ValueError("Finger-pad directions must be unit vectors")
+        if self.finger_pad_directions is not None:
+            directions = np.asarray(self.finger_pad_directions, float)
+            if directions.shape != (5, 3) or not np.isfinite(directions).all():
+                raise ValueError("Finger-pad directions must be finite with shape (5, 3)")
+            if not np.allclose(np.linalg.norm(directions, axis=1), 1, atol=1e-5):
+                raise ValueError("Finger-pad directions must be unit vectors")
         if self.ready and self.initial_joint_angles is None:
             raise ValueError("Ready input frames require initial joint angles")
         if self.initial_joint_angles is not None and not isinstance(

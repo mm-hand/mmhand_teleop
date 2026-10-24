@@ -25,7 +25,7 @@ from input.frame import (
     hand0_middle_tip_distance,
 )
 from one_euro import OneEuro
-from .camera import OpenCVCamera
+from input.camera import OpenCVCamera
 
 MEAN = np.array((0.485, 0.456, 0.406), np.float32)[:, None, None]
 STD = np.array((0.229, 0.224, 0.225), np.float32)[:, None, None]

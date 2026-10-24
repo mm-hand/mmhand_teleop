@@ -8,3 +8,4 @@ __pycache__/
 *.egg-info/
 log.txt
 input/manus/calibrations/*.mcal
+input/mediapipe/assets/*.task

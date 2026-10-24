@@ -1,0 +1,1 @@
+"""MediaPipe hand-landmark input."""

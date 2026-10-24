@@ -1,9 +1,9 @@
 # mmhand_teleop
 
-`mmhand_teleop` converts a monocular camera (WiLoR ONNX) or a MANUS glove into
-one common 21-point hand observation, retargets the left hand to all 21 MMHand
-joints, and serves a browser dashboard. ROS 2 and SAPIEN output are optional;
-the base application runs without ROS.
+`mmhand_teleop` converts a monocular camera (WiLoR ONNX or MediaPipe) or a
+MANUS glove into one common 21-point hand observation, retargets the left hand
+to all 21 MMHand joints, and serves a browser dashboard. ROS 2 and SAPIEN output
+are optional; the base application runs without ROS.
 
 ## Installation
 
@@ -20,6 +20,19 @@ python -m pip install -r input/wilor/requirements.txt
 The requirements file installs ONNX Runtime with its CUDA and cuDNN
 dependencies; WiLoR requires `CUDAExecutionProvider` and an NVIDIA GPU.
 
+MediaPipe is optional:
+
+```bash
+python -m pip install --no-deps -r input/mediapipe/requirements.txt
+```
+
+`--no-deps` keeps the environment's OpenCV instead of installing
+`opencv-contrib-python`; the requirements file lists mediapipe's non-OpenCV
+runtime dependencies. If you are not using the environment above, drop
+`--no-deps`. Download
+[hand_landmarker.task](https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task)
+into `input/mediapipe/assets/`. The model file is not tracked by git.
+
 MANUS requires the bundled Core SDK bridge; follow
 `input/manus/assets/README.md`. SAPIEN is optional:
 `python -m pip install -r simulation/requirements.txt`.
@@ -29,8 +42,8 @@ MANUS requires the bundled Core SDK bridge; follow
 All runtime settings live in `config.py`:
 
 ```python
-INPUT_SOURCE = "manus"   # "wilor" or "manus"
-CAMERA_DEVICE = "/dev/video4"  # V4L2 index or /dev/videoN path
+INPUT_SOURCE = "mediapipe"   # "mediapipe", "wilor", or "manus"
+CAMERA_DEVICE = 0            # Windows camera index or Linux V4L2 index/path
 ```
 
 ```bash
@@ -53,7 +66,8 @@ first WiLoR start loads the models and takes about 10-20 s.
 The Input hand 3D panel uses a canonical display: the hand is expressed in its
 palm frame, palm toward the screen, and normalized by palm width, so moving or
 rotating the hand does not rotate or resize the view. Retargeting still uses
-the raw source coordinates.
+the raw source coordinates. Without finger-pad normals (MediaPipe) the display
+uses the palm-frame normal and hides the pad arrows.
 
 ## How it works
 
@@ -61,14 +75,18 @@ the raw source coordinates.
 ONNX models, producing MANO vertices. A joint regressor and fingertip vertices
 yield Standard21 points and five outward finger-pad normals. One Euro filters
 smooth points and directions; angles are solved from the filtered points and
-packaged into `input.frame.InputFrame`. The MANUS path maps Raw25 SDK data to
-the same Standard21 points, pad directions, and ergonomics-derived angles.
+packaged into `input.frame.InputFrame`. MediaPipe produces Standard21 world
+landmarks in metres, with no finger-pad normals: those frames carry
+`finger_pad_directions=None`. The MANUS path maps Raw25 SDK data to the same
+Standard21 points, pad directions, and ergonomics-derived angles.
 
 **Retargeting.** `retarget.Retargeter` builds a thumb-CMC-local frame from the
 input points, maps the input angles to robot targets, and runs a bounded SLSQP
 solve over all 21 joints with analytic Jacobians. The weighted objective
 contains the thumb-tip position, the two thumb bends, the 16 four-finger joint
 angles, four fingertip vectors, the thumb pad, and four finger pad directions.
+The two pad terms are disabled (weight 0) on frames without
+`finger_pad_directions`, so MediaPipe input never fakes fingertip pointing.
 The previous solution is the next warm start; outputs are clipped to URDF
 limits. Input, retargeting, visualization, ROS, and simulation contain no
 device-specific branches.
@@ -85,12 +103,15 @@ publishes `std_msgs/msg/Float32MultiArray`:
 | `/mmhand/finger_pad_directions` | 5x3 | outward pad normals |
 | `/mmhand/joint_angle_deg` | 21 | MMHand J00-J20, degrees |
 
+The finger-pad topic is published only when the input source provides pointing.
+
 ## Repository layout
 
 ```text
 input/
   frame.py              InputFrame, topology, CMC frame
-  wilor/camera.py       latest-frame OpenCV capture
+  camera.py             latest-frame OpenCV capture
+  mediapipe/source.py   Hand Landmarker points, filtering, InputFrame
   wilor/source.py       ONNX detector/reconstructor, filtering, InputFrame
   manus/adapter.py      Raw25 -> Standard21 mapping and pad directions
   manus/calibration.py  terminal calibration gate
@@ -110,7 +131,7 @@ test_*.py               unit tests
 ## Tests and licenses
 
 ```bash
-python -m unittest -v test_hand_capture.py test_wilor.py test_manus_phase1.py
+python -m unittest -v test_hand_capture.py test_wilor.py test_manus_phase1.py test_mediapipe.py
 python -m unittest -v test_simulation.py
 ```
 
