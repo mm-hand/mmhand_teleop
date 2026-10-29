@@ -79,11 +79,11 @@ class FakeReconstructorSession:
 
 class WilorTests(unittest.TestCase):
     def test_cli_and_configured_source(self):
-        args = _parse_args([])
-        self.assertFalse(args.ros)
-        self.assertFalse(args.sim)
-        self.assertTrue(_parse_args(["--ros"]).ros)
+        self.assertTrue(_parse_args([]).ros)
+        self.assertFalse(_parse_args(["--no-ros"]).ros)
         self.assertTrue(_parse_args(["--sim"]).sim)
+        with patch("sys.stderr"), self.assertRaises(SystemExit):
+            _parse_args(["--ros"])
         with patch("sys.stderr"), self.assertRaises(SystemExit):
             _parse_args(["--source", "wilor"])
         selected = object()

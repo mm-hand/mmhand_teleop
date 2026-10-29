@@ -11,9 +11,11 @@ from viewer_process import ViewerProcess
 
 def _parse_args(argv=None):
     parser = argparse.ArgumentParser()
-    output = parser.add_mutually_exclusive_group()
-    output.add_argument("--ros", action="store_true")
-    output.add_argument("--sim", action="store_true")
+    parser.add_argument(
+        "--no-ros", action="store_false", dest="ros",
+        help="do not publish ROS 2 topics",
+    )
+    parser.add_argument("--sim", action="store_true")
     return parser.parse_args(argv)
 
 

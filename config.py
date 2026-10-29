@@ -7,13 +7,13 @@ WILOR_ASSET_DIR = _ROOT / "input/wilor/assets"
 
 # Input -----------------------------------------------------------------------
 
-INPUT_SOURCE = "mediapipe"  # "mediapipe", "wilor", or "manus"
+INPUT_SOURCE = "wilor"  # "mediapipe", "wilor", or "manus"
 
 # Camera (WiLoR and MediaPipe) -------------------------------------------------
 
 # Windows: integer camera index (0 = built-in camera). Linux: V4L2 index or
 # "/dev/videoN" path.
-CAMERA_DEVICE = 0
+CAMERA_DEVICE = "/dev/video8"  # V4L2 index or /dev/videoN path
 CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS = 640, 480, 30
 
 # WILOR ------------------------------------------------------------------------
@@ -100,13 +100,13 @@ RETARGET_POSITION_NORMALIZER_M = 0.086
 # 掌原点到拇指尖的人手向量缩放系数；1.0 表示不缩放。
 RETARGET_THUMB_TIP_SCALE = 1.0
 # 掌原点到拇指尖位置误差的损失权重。
-RETARGET_THUMB_TIP_WEIGHT = 0.0
+RETARGET_THUMB_TIP_WEIGHT = 1.0
 # 拇指链第一/第二弯曲分别到 MMHand J18/J19 的角度损失。
 RETARGET_THUMB_PROXIMAL_BEND_WEIGHT = 0.3
 RETARGET_THUMB_DISTAL_BEND_WEIGHT = 0.5
 # 四指关节角和拇指尖到四指尖相对向量的损失权重。
 RETARGET_FINGER_ANGLE_WEIGHT = 3.0
-RETARGET_FINGERTIP_VECTOR_WEIGHT = 8.0
+RETARGET_FINGERTIP_VECTOR_WEIGHT = 0.0
 # Human-to-MMHand thumb pad direction loss weight.
 RETARGET_THUMB_PAD_WEIGHT = 1.0 # 2.0
 # Per-finger pad-direction loss weights in Standard21 finger order.

@@ -2,8 +2,9 @@
 
 `mmhand_teleop` converts a monocular camera (WiLoR ONNX or MediaPipe) or a
 MANUS glove into one common 21-point hand observation, retargets the left hand
-to all 21 MMHand joints, and serves a browser dashboard. ROS 2 and SAPIEN output
-are optional; the base application runs without ROS.
+to all 21 MMHand joints, and serves a browser dashboard. ROS 2 output is on by
+default; `--no-ros` runs the dashboard without it. The SAPIEN grasp simulation
+is optional (`--sim`).
 
 ## Installation
 
@@ -34,7 +35,22 @@ runtime dependencies. If you are not using the environment above, drop
 into `input/mediapipe/assets/`. The model file is not tracked by git.
 
 MANUS requires the bundled Core SDK bridge; follow
-`input/manus/assets/README.md`. SAPIEN is optional:
+`input/manus/assets/README.md`. Calibrate each glove once before tracking:
+
+```bash
+python -m input.manus.calibration --side left          # import the saved .mcal
+python -m input.manus.calibration --side left --force  # run the wizard again
+python -m input.manus.calibration --side right         # per glove, not per hand
+```
+
+The wizard waits up to `MANUS_CALIBRATION_CONNECT_TIMEOUT` for a connected
+glove, lists the official SDK calibration steps, records each pose when you
+press Enter, and saves
+`input/manus/calibrations/<side>_<8 hex digit glove id>.mcal` (git-ignored).
+`q` or Ctrl-C aborts without writing a file. `track.py` imports the saved blob
+at startup and only runs the wizard when no file exists for that glove.
+
+SAPIEN is optional and used only with `--sim`:
 `python -m pip install -r simulation/requirements.txt`.
 
 ## Running
@@ -47,16 +63,16 @@ CAMERA_DEVICE = 0            # Windows camera index or Linux V4L2 index/path
 ```
 
 ```bash
-python track.py          # dashboard only, without ROS
-python track.py --ros    # also publish ROS 2 topics
-python track.py --sim    # optional SAPIEN grasp simulation
+python track.py          # dashboard and ROS 2 publishing
+python track.py --no-ros # dashboard only, without ROS
+python track.py --sim    # also open the optional SAPIEN grasp window
 ```
 
-`--ros` and `--sim` are mutually exclusive. Open <http://localhost:8080>; the
-two 3D views are served on 8081 (input hand) and 8082 (MMHand). If one of these
-ports is already in use (for example by another dashboard), each server moves
-to the next free port and the `Dashboard: ...` URL printed at startup is the
-one to open.
+`--no-ros` and `--sim` are the only command-line arguments; every other setting
+lives in `config.py`. Open <http://localhost:8080>; the two 3D views are served
+on 8081 (input hand) and 8082 (MMHand). If one of these ports is already in use
+(for example by another dashboard), each server moves to the next free port and
+the `Dashboard: ...` URL printed at startup is the one to open.
 
 Only a ready left hand enters retargeting; a right hand is displayed only. With
 `INPUT_SOURCE = "manus"`, startup waits for a connected left glove and its
@@ -94,8 +110,9 @@ device-specific branches.
 **Output.** `track.py` reads one frame per loop, submits ready left-hand frames
 to a background solver, and forwards the newest display snapshot to a separate
 Viewer process. The Viewer owns the two Viser scenes and the HTTP dashboard, so
-slow rendering never blocks acquisition or solving. Optional ROS 2 output
-publishes `std_msgs/msg/Float32MultiArray`:
+slow rendering never blocks acquisition or solving. ROS 2 output is published
+by default and `--no-ros` disables it; it sends
+`std_msgs/msg/Float32MultiArray`:
 
 | Topic | Shape | Meaning |
 |---|---:|---|
@@ -120,7 +137,7 @@ assets/mmhand/          MMHand URDF, visual meshes, collision meshes
 config.py               runtime settings
 one_euro.py             ndarray One Euro filter
 retarget.py             URDF FK, analytic Jacobians, SLSQP retargeter
-ros.py                  optional ROS 2 publishers
+ros.py                  ROS 2 publishers
 viewer.py               HTTP dashboard and two Viser scenes
 viewer_process.py       isolated Viewer process proxy
 track.py                process entry point

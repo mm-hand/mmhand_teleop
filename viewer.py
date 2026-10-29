@@ -1,7 +1,6 @@
 import errno
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-import socket
 import threading
 import time
 
@@ -356,13 +355,13 @@ def _bind_dashboard_server(handler, port):
     must do the same. Otherwise an unrelated service listening on WEB_PORT
     would fail the whole viewer (and with it the teleop session) even though
     the two 3D views started normally.
+
+    The bind *is* the probe: a TCP connect probe would open and immediately
+    drop a socket on Viser's websocket ports, which Viser logs as a failed
+    opening handshake.
     """
 
     for candidate in range(port, port + DASHBOARD_PORT_ATTEMPTS):
-        with socket.socket() as probe:
-            probe.settimeout(0.2)
-            if probe.connect_ex(("127.0.0.1", candidate)) == 0:
-                continue
         try:
             return ThreadingHTTPServer(("0.0.0.0", candidate), handler)
         except OSError as error:
