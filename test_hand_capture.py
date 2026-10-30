@@ -234,10 +234,23 @@ class RetargetTests(unittest.TestCase):
         q = self.model.initial_angle_targets(self.angles)
         self.assertTrue(np.isfinite(q).all())
         self.assertTrue(np.all((q >= self.model.lower) & (q <= self.model.upper)))
-        indices = self.model.finger_joints
-        np.testing.assert_allclose(
-            q[indices[:, 1:]], self.model.lower[indices[:, 1:]], atol=1e-12
-        )
+
+    def test_robot_skeleton_reproduces_its_own_finger_angles(self):
+        # The affine calibration must invert the reading the robot itself emits,
+        # otherwise the angle prior drags every finger off the true pose.
+        for q in (
+            self.model.seed,
+            np.clip(self.model.seed + 0.4 * (self.model.upper - self.model.seed),
+                    self.model.lower, self.model.upper),
+        ):
+            points = self.model.skeleton_points(q)
+            angles = initial_joint_angles_from_points(points)
+            mapped = self.model.angle_targets(angles)
+            indices = self.model.finger_joints.ravel()
+            np.testing.assert_allclose(
+                mapped[indices], q[indices], atol=0.12,
+                err_msg="four-finger angle mapping must return the source pose",
+            )
 
     def test_hand0_middle_tip_distance_is_direct(self):
         self.assertAlmostEqual(
@@ -337,18 +350,27 @@ class RetargetTests(unittest.TestCase):
         self.assertTrue(np.any(vector_gradient[:16]))
         self.assertTrue(np.any(vector_gradient[16:]))
 
-    def test_four_finger_flexion_uses_urdf_lower_as_human_zero(self):
+    def test_four_finger_flexion_uses_measured_zero(self):
+        # Human zero flexion must land on the robot's own zero, not on its URDF
+        # lower limit; that offset was a constant bias on every finger.
         index = self.model.finger_joints[0]
-        four = self.angles.four_fingers.copy()
-        four[0] = (0.0, 0.0, np.radians(30), np.radians(40))
-        angles = InitialJointAngles(four, self.angles.thumb_bends)
-        mapped = self.model.initial_angle_targets(angles)
-        self.assertAlmostEqual(mapped[index[1]], self.model.lower[index[1]])
+        rest = initial_joint_angles_from_points(
+            self.model.skeleton_points(self.model.seed)
+        )
+        four = rest.four_fingers.copy()
+        four[0] = (rest.four_fingers[0, 0], 0.0,
+                   np.radians(30), np.radians(40))
+        mapped = self.model.initial_angle_targets(
+            InitialJointAngles(four, rest.thumb_bends)
+        )
+        gain, offset = self.model.finger_gain, self.model.finger_offset
+        base = 0  # Index is the first row of self.model.finger_joints
+        self.assertAlmostEqual(mapped[index[1]], (0.0 - offset[base + 1]) / gain[base + 1])
         self.assertAlmostEqual(
-            mapped[index[2]], self.model.lower[index[2]] + np.radians(30)
+            mapped[index[2]], (np.radians(30) - offset[base + 2]) / gain[base + 2]
         )
         self.assertAlmostEqual(
-            mapped[index[3]], self.model.lower[index[3]] + np.radians(40)
+            mapped[index[3]], (np.radians(40) - offset[base + 3]) / gain[base + 3]
         )
 
     def test_manus_angles_directly_seed_all_observed_robot_joints(self):
@@ -544,6 +566,79 @@ class RetargetTests(unittest.TestCase):
         np.testing.assert_allclose(
             little_gradient[4:] - without[4:], 0.0, atol=1e-15
         )
+
+    def test_robot_features_reproduce_robot_skeleton(self):
+        # Feeding the robot's own FK hand back must produce zero residual; any
+        # frame mismatch shows up here as a constant offset on every feature.
+        # The tolerance covers the robot CMC frame drifting a couple of degrees
+        # between the seed pose and a fully flexed one.
+        for amplitude in (0.0, 0.3, 0.6):
+            q = np.clip(
+                self.model.seed + amplitude * (self.model.upper - self.model.seed),
+                self.model.lower, self.model.upper,
+            )
+            points = self.model.skeleton_points(q)
+            pads = self.model.fingertip_pads(q)[1]
+            _, _, thumb_tip, relative, target_pads = human_vector_features(points, pads)
+            values = self.model.features(q)[0]
+            np.testing.assert_allclose(values[0], thumb_tip, atol=2.5e-3)
+            np.testing.assert_allclose(values[2], relative, atol=2.5e-3)
+            cosine = np.clip(np.sum(values[3] * target_pads, axis=1), -1, 1)
+            self.assertLess(np.degrees(np.arccos(cosine)).max(), 2.5)
+
+    def test_velocity_fidelity_on_a_curling_finger(self):
+        # Local transfer: move the source hand a little and compare the fingertip
+        # velocity the solver produces with the source's own velocity.
+        retargeter = Retargeter(self.model)
+        previous = None
+        linear_gain, linear_cosine, angular_gain, angular_cosine = [], [], [], []
+        for index in range(30):
+            q = np.clip(
+                self.model.seed + (index / 29.0) * 0.6
+                * (self.model.upper - self.model.seed),
+                self.model.lower, self.model.upper,
+            )
+            points = self.model.skeleton_points(q)
+            pads = self.model.fingertip_pads(q)[1]
+            solved, _ = retargeter.solve(
+                points, index / 30.0, pads, initial_joint_angles_from_points(points)
+            )
+            human = human_vector_features(points, pads)
+            robot = self.model.features(solved)[0]
+            if previous is not None:
+                source = np.asarray(human[3]) - previous[0]
+                result = np.asarray(robot[2]) - previous[1]
+                source_speed = np.linalg.norm(source, axis=1) + 1e-12
+                result_speed = np.linalg.norm(result, axis=1) + 1e-12
+                linear_gain.append(result_speed / source_speed)
+                linear_cosine.append(
+                    np.sum(source * result, axis=1) / (source_speed * result_speed)
+                )
+                source_turn = np.degrees(np.arccos(np.clip(
+                    np.sum(previous[2] * np.asarray(human[4]), axis=1), -1, 1)))
+                result_turn = np.degrees(np.arccos(np.clip(
+                    np.sum(previous[3] * np.asarray(robot[3]), axis=1), -1, 1)))
+                active = source_turn > 0.5
+                if np.any(active):
+                    angular_gain.append(np.where(
+                        active, result_turn / (source_turn + 1e-12), np.nan))
+                    source_axis = np.cross(previous[2], np.asarray(human[4]))
+                    result_axis = np.cross(previous[3], np.asarray(robot[3]))
+                    cosine = np.sum(source_axis * result_axis, axis=1) / (
+                        np.linalg.norm(source_axis, axis=1)
+                        * np.linalg.norm(result_axis, axis=1) + 1e-12
+                    )
+                    angular_cosine.append(np.where(active, cosine, np.nan))
+            previous = (
+                np.asarray(human[3]), np.asarray(robot[2]),
+                np.asarray(human[4]), np.asarray(robot[3]),
+            )
+        gain = np.mean(linear_gain)
+        self.assertGreater(gain, 0.9, "fingertip translation is too slow")
+        self.assertLess(gain, 1.15, "fingertip translation overshoots")
+        self.assertGreater(np.nanmean(linear_cosine), 0.94)
+        self.assertGreater(np.nanmean(angular_gain), 0.75)
+        self.assertGreater(np.nanmean(angular_cosine), 0.85)
 
     def test_unfiltered_output_and_pause(self):
         retargeter = Retargeter(self.model)

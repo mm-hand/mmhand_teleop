@@ -11,7 +11,7 @@ import numpy as np
 from scipy.optimize import Bounds, minimize
 
 import config as C
-from input.frame import InitialJointAngles, compute_cmc_frame
+from input.frame import InitialJointAngles, compute_cmc_frame, initial_joint_angles_from_points
 
 EPS = 1e-9
 ROBOT_TIPS = ("5-tip_Link", "1-tip_Link", "2-tip_Link", "3-tip_Link", "4-tip_Link")
@@ -33,6 +33,24 @@ ROBOT_FINGER_JOINTS = tuple(
         f"finger_{finger}_fingertip_1_DIP_Joint",
     )
     for name, finger in zip(("Index", "Middle", "Ring", "Little"), range(1, 5))
+)
+# Standard21 landmark -> URDF link; the same order the human input uses, so the
+# robot can be measured with the same CMC frame and the same bone lengths.
+ROBOT_STANDARD21_LINKS = (
+    "base_link",
+    "mmhand_thumb_1_thumb_base_1",
+    "mmhand_thumb_1_abduction_adduction_link_without_fin_1",
+    "mmhand_thumb_1_finger_7_proximal_phalanx_1",
+    "5-tip_Link",
+) + tuple(
+    link
+    for finger in range(1, 5)
+    for link in (
+        f"finger_{finger}_proximal_phalanx_1",
+        f"finger_{finger}_distal_phalanx_1",
+        f"finger_{finger}_fingertip_1",
+        f"{finger}-tip_Link",
+    )
 )
 
 
@@ -229,29 +247,19 @@ class RobotModel:
             raise ValueError("MMHand revolute joints must have nonzero ranges")
         self.seed = np.clip(np.zeros(len(self.names)), self.lower, self.upper)
         transforms = self.fk(self.seed)
-        self.palm_frame = transforms["base_link"][:3, :3].copy()
-        self.finger_neutral, self.finger_axis = [], []
-        for chain, indices in zip(ROBOT_FINGERS, self.finger_joints):
-            direction = (
-                transforms[chain[1]][:3, 3] - transforms[chain[0]][:3, 3]
-            ) @ self.palm_frame
-            joint = self.joints[self.names[indices[0]]]
-            frame = transforms[joint["parent"]] @ joint["origin"]
-            axis = (frame[:3, :3] @ joint["axis"]) @ self.palm_frame
-            if abs(axis[2]) <= EPS:
-                raise ValueError("MMHand MCP A-A axis must follow the palm z axis")
-            self.finger_axis.append(axis[2])
-            self.finger_neutral.append(-np.arctan2(direction[1], direction[0]) / axis[2])
-        self.finger_neutral = np.asarray(self.finger_neutral)
-        self.finger_axis = np.asarray(self.finger_axis)
+        # The human side measures everything in the CMC frame built from its own
+        # 21 landmarks. Build the identical frame from the robot's own skeleton
+        # so both sides share an origin and axes instead of differing by ~49 mm
+        # and ~24 degrees.
+        skeleton = self.skeleton_points(self.seed)
+        self.cmc_origin, self.cmc_frame = compute_cmc_frame(skeleton)
+        # Legacy aliases: the viewer and diagnostics still speak in palm-frame terms.
+        self.palm_frame = self.cmc_frame
+        self.palm_position = self.cmc_origin
         cmc = self.joints["Thumb_CMC"]
         cmc_frame = transforms[cmc["parent"]] @ cmc["origin"]
-        cmc_origin = cmc_frame[:3, 3]
         self.cmc_axis = _unit(cmc_frame[:3, :3] @ cmc["axis"])
-        mcp_aa_origin = transforms[self.joints["Thumb_MCP_AA"]["child"]][:3, 3]
-        self.palm_position = cmc_origin + self.cmc_axis * np.dot(
-            mcp_aa_origin - cmc_origin, self.cmc_axis
-        )
+        self.finger_gain, self.finger_offset = self._calibrate_finger_angles()
         middle_link = root.find(f"./link[@name='{ROBOT_MIDDLE_FINGERTIP}']")
         visual = None if middle_link is None else middle_link.find("visual")
         mesh = None if visual is None else visual.find("geometry/mesh")
@@ -295,6 +303,42 @@ class RobotModel:
         """Return every URDF link transform for a 21-element joint vector."""
 
         return self._forward(np.asarray(q, float))
+
+    def skeleton_points(self, q):
+        """Return the robot's 21 Standard21 landmark positions in robot space."""
+
+        transforms = self.fk(q)
+        return np.asarray([transforms[name][:3, 3] for name in ROBOT_STANDARD21_LINKS])
+
+    def _calibrate_finger_angles(self):
+        """Fit ``human_reading = gain * q + offset`` per four-finger joint.
+
+        Sweeping each joint on the robot's own skeleton gives one affine row per
+        (finger, joint). The inverse is then a per-joint zero point, sign, and
+        scale in one table - no hand-written neutral angle or AA sign constant.
+        """
+
+        count = len(self.finger_joints.ravel())
+        gain, offset = np.ones(count), np.zeros(count)
+        for row, indices in enumerate(self.finger_joints):
+            for column, joint in enumerate(indices):
+                samples = np.linspace(self.lower[joint], self.upper[joint], 9)
+                readings = []
+                for value in samples:
+                    q = self.seed.copy()
+                    q[joint] = value
+                    points = self.skeleton_points(q)
+                    readings.append(
+                        initial_joint_angles_from_points(points).four_fingers[row, column]
+                    )
+                gain[row * 4 + column], offset[row * 4 + column] = np.polyfit(
+                    samples, np.asarray(readings), 1
+                )
+        if not (np.isfinite(gain).all() and np.isfinite(offset).all()):
+            raise ValueError("MMHand finger angle calibration is not finite")
+        if np.any(np.abs(gain) <= EPS):
+            raise ValueError("MMHand finger angle calibration lost the joint")
+        return gain, offset
 
     def fingertips(self, q):
         """Return Thumb-to-Little virtual fingertip positions in robot space."""
@@ -347,16 +391,14 @@ class RobotModel:
         if not isinstance(initial_angles, InitialJointAngles):
             raise ValueError("Retargeting requires InitialJointAngles")
         q = self.seed.copy()
-        for row, indices in enumerate(self.finger_joints):
-            human = initial_angles.four_fingers[row]
-            if initial_angles.four_finger_space == "robot":
-                angles = human
-            else:
-                aa = self.finger_neutral[row] + human[0] / self.finger_axis[row]
-                angles = np.concatenate((
-                    (aa,), self.lower[indices[1:]] + human[1:],
-                ))
-            q[indices] = np.clip(angles, self.lower[indices], self.upper[indices])
+        indices = self.finger_joints.ravel()
+        if initial_angles.four_finger_space == "robot":
+            angles = initial_angles.four_fingers.ravel()
+        else:
+            angles = (
+                initial_angles.four_fingers.ravel() - self.finger_offset
+            ) / self.finger_gain
+        q[indices] = np.clip(angles, self.lower[indices], self.upper[indices])
         q[18:20] = np.clip(
             initial_angles.thumb_bends, self.lower[18:20], self.upper[18:20]
         )
